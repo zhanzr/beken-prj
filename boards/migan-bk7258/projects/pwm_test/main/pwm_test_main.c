@@ -3,7 +3,10 @@
 #include "bk_private/bk_init.h"
 #include <components/system.h>
 #include <os/os.h>
+#include <driver/gpio.h>
 #include <driver/pwm.h>
+#include <driver/pwr_clk.h>
+#include "gpio_map.h"
 
 #if (CONFIG_SYS_CPU0)
 
@@ -17,21 +20,23 @@
  *      triangle 0% -> 100% -> 0%, step 10% (~500 ms active),
  *      then idle (0%) for 1 s, repeat
  *
- * The PWM driver maps the GPIOs to their PWM function itself
- * (GPIO_25 is default-muxed to LCD_G6 - the driver unmaps it).
- * PWM source clock is the 26 MHz XTAL (driver default).
+ * IMPORTANT: the LCD/backlight and the motor are powered from a 3.3V LDO
+ * gated by GPIO_13 ("multi modules use one gpio to control different ldo",
+ * see gpio_map.h). The rail must be voted on before anything on it works:
+ *   bk_pm_module_vote_ctrl_external_ldo(GPIO_CTRL_LDO_MODULE_x, ...)
+ * (same as vendor bk_motor/motor.c and lcd_driver.c do)
  */
 
 #define BACKLIGHT_PWM_CH	5	/* P25 */
-#define BACKLIGHT_FREQ_HZ	1000	/* 1 kHz, no visible flicker */
+#define BACKLIGHT_FREQ_HZ	1000
 #define BACKLIGHT_STEP_MS	10	/* full triangle = 200 * 10 ms = 2 s */
 
 #define MOTOR_PWM_CH		3	/* P9 */
-#define MOTOR_FREQ_HZ		20000	/* 20 kHz, above audible range */
+#define MOTOR_FREQ_HZ		1000	/* vendor motor.c uses 1 kHz */
 #define MOTOR_STEP_MS		25	/* 20 steps * 25 ms = 500 ms active */
 #define MOTOR_IDLE_MS		1000
 
-#define PWM_SRC_CLK_HZ		26000000
+#define PWM_SRC_CLK_HZ		26000000	/* driver default: 26 MHz XTAL */
 
 static void pwm_set_duty_percent(pwm_chan_t ch, uint32_t freq_hz, int percent)
 {
@@ -84,11 +89,21 @@ void user_app_main(void)
 {
 	bk_pwm_driver_init();
 
+	/* power up the shared 3.3V LDO rail (LCD, backlight, motor) */
+	bk_pm_module_vote_ctrl_external_ldo(GPIO_CTRL_LDO_MODULE_LCD,
+					    LCD_LDO_CTRL_GPIO,
+					    GPIO_OUTPUT_STATE_HIGH);
+	bk_pm_module_vote_ctrl_external_ldo(GPIO_CTRL_LDO_MODULE_MOTOR,
+					    MOTOR_LDO_CTRL_GPIO,
+					    GPIO_OUTPUT_STATE_HIGH);
+	rtos_delay_milliseconds(20);	/* rail settle */
+
 	/* backlight LED: continuous triangle, step 1% */
 	pwm_chan_setup(BACKLIGHT_PWM_CH, BACKLIGHT_FREQ_HZ);
 
 	printf("pwm_test: P25=PWM5 backlight (1kHz triangle, step 1%%), "
-	       "P9=PWM3 motor (20kHz triangle step 10%% + 1s idle)\r\n");
+	       "P9=PWM3 motor (1kHz triangle step 10%% + 1s idle), "
+	       "LDO voted on (ctrl gpio=%d)\r\n", LCD_LDO_CTRL_GPIO);
 
 	rtos_create_thread(&motor_thread_handle, 7, "motor_pwm",
 			   motor_thread, 4096, 0);
@@ -104,7 +119,8 @@ void user_app_main(void)
 			pwm_set_duty_percent(BACKLIGHT_PWM_CH, BACKLIGHT_FREQ_HZ, d);
 			rtos_delay_milliseconds(BACKLIGHT_STEP_MS);
 		}
-		printf("backlight triangle %d done\r\n", ++count);
+		printf("backlight triangle %d done (LDO ctrl gpio=%d)\r\n",
+		       ++count, LCD_LDO_CTRL_GPIO);
 	}
 }
 
