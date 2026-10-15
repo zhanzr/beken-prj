@@ -8,13 +8,31 @@ All numbers are taken from this repository's actual build artifacts
 (`build/beken_genie/*/app.map` linker memory configurations, `arm-none-eabi-size`,
 the flash partition table, and the linked library lists) unless stated otherwise.
 
-The BK7258 is a triple-core Cortex-M33 SoC. In this project:
+The BK7258 is a triple-core Cortex-M33 SoC running an AMP (asymmetric multiprocessing)
+firmware. In this project:
 
 | Core | Firmware binary | Role |
 |------|-----------------|------|
-| CPU0 | `app.bin`       | Main application: WiFi + BLE, audio/video engines, GUI, OTA, CLI |
-| CPU1 | `app1.bin`      | Secondary application core (multimedia/AI offload) |
-| CPU2 | `app2.bin`      | Small slave core (runs from PSRAM) |
+| CPU0 (`cp0`) | `app.bin`       | Primary core: WiFi + BLE stack, GUI, multimedia, OTA, CLI, user app |
+| CPU1 (`cp1`) | `app1.bin`      | Secondary application core (offload, USB host stack) |
+| CPU2 (`cp2`) | `app2.bin`      | Small slave core; its whole image executes from PSRAM |
+
+**Cores & clocks** (vendor doc: `docs/bk7258/en/developer-guide/power_save/bk_cpu_frequency.rst`):
+the three cores are the same Cortex-M33 architecture, but the SoC is asymmetric:
+
+| | CPU0 | CPU1 | CPU2 |
+|---|------|------|------|
+| Max frequency | **240 MHz** (480 MHz PLL ÷ 2) | **480 MHz** | **480 MHz** |
+| This project default | 120 MHz (`CONFIG_CPU_FREQ_HZ`) | idle | idle |
+| Code memory | flash XIP + IRAM + ITCM | flash XIP + IRAM + ITCM | **PSRAM** (no IRAM) |
+| Data RAM partition | 240.5 KiB | 224 KiB | 64 KiB |
+
+All three cores run the **same project** (`main()` compiled three times with
+`CONFIG_SYS_CPU0/1/2`), so user code may run on any core; WiFi/BT and the RF
+libraries only operate on CPU0, peripherals are arbitrated across cores by the
+SDK's AMP resource manager, and the SRAM/IRAM split between cores is fixed at
+link time (`CONFIG_CPU0_SPE_RAM_SIZE` + `CONFIG_CPU1_APP_RAM_SIZE` +
+`CONFIG_CPU2_APP_RAM_SIZE` = 640 KiB).
 
 ---
 
