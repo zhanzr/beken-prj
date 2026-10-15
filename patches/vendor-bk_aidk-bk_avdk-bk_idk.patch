@@ -1,0 +1,396 @@
+diff --git a/components/bk_rtos/include/pthread_internal.h b/components/bk_rtos/include/pthread_internal.h
+index 37967de2..3d8e8201 100755
+--- a/components/bk_rtos/include/pthread_internal.h
++++ b/components/bk_rtos/include/pthread_internal.h
+@@ -13,9 +13,14 @@
+ // limitations under the License.
+ #if !defined PTHREAD_INTERNAL_H
+ #define PTHREAD_INTERNAL_H
+-#if (CONFIG_SOC_BK7256XX)
++#if (CONFIG_SOC_BK7256XX) || (CONFIG_SOC_BK7258)
++#if defined(_NEWLIB_VERSION)
++#include <sys/types.h>   /* newlib provides pthread_key_t via sys/_pthreadtypes.h */
++#endif
++#ifndef _SYS__PTHREADTYPES_H_
+ 	typedef unsigned int pthread_key_t;
+ #endif
++#endif
+ typedef void (*pthread_destructor_t)(void*);
+ int pthread_key_create(pthread_key_t *key, pthread_destructor_t destructor);
+ int pthread_setspecific(pthread_key_t key, const void *value);
+diff --git a/components/wpa_supplicant-2.10/src/utils/os_none.c b/components/wpa_supplicant-2.10/src/utils/os_none.c
+index d38796a0..6c896f9b 100755
+--- a/components/wpa_supplicant-2.10/src/utils/os_none.c
++++ b/components/wpa_supplicant-2.10/src/utils/os_none.c
+@@ -15,6 +15,7 @@
+ #include "bk_fake_clock.h"
+ 
+ #include "includes.h"
++#include <time.h>
+ #include "utils/os.h"
+ #include <components/system.h>
+ #ifdef IEEE8021X_EAPOL
+diff --git a/middleware/boards/bk7258/bk7258.wrapper b/middleware/boards/bk7258/bk7258.wrapper
+index b3774ea6..fb4dfb2e 100755
+--- a/middleware/boards/bk7258/bk7258.wrapper
++++ b/middleware/boards/bk7258/bk7258.wrapper
+@@ -37,6 +37,8 @@ def run_cmd(cmd):
+ 		logging.error(f'failed to run "{cmd}"')
+ 		exit(1)
+ 
++GEN_IMAGE_TOOL = 'cmake_Gen_image.exe' if sys.platform == 'win32' else 'cmake_Gen_image'
++
+ def run_cmd_with_ret(cmd):
+ 	p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8')
+ 	out, err = p.communicate()
+@@ -174,7 +176,7 @@ def pack(prebuild):
+ 	logging.debug(f'pack={pack}')
+ 
+ 	SH_SEC_TOOL = f'{tools_dir}/sh_sec_tools/secure_boot_tool'
+-	BK_UTILS_TOOL = f'{tools_dir}/beken_utils/main.py'
++	BK_UTILS_TOOL = f'python3 {tools_dir}/beken_utils/main.py'
+ 	MCUBOOT_IMG_TOOL = f'{tools_dir}/mcuboot_tools'
+ 
+ 	CMAKE_BIN_DIR = bin_dir
+@@ -235,10 +237,10 @@ def pack(prebuild):
+ 	os.makedirs(dest_boot_dir, exist_ok=True)
+ 	if (os.path.exists(bootloader_bin) == True):
+ 		copy_file(bootloader_bin, f'{dest_boot_dir}/bootloader.bin')
+-		run_cmd('%s/cmake_Gen_image genfile -injsonfile %s/config.json -infile %s/bootloader.bin -outfile %s/bootloader.bin -genjson %s/partition_bootloader.json'%(pack_boot_tools, pack_boot_tools, dest_boot_dir,_BUILD_DIR, pack_boot_tools))
++		run_cmd('%s/%s genfile -injsonfile %s/config.json -infile %s/bootloader.bin -outfile %s/bootloader.bin -genjson %s/partition_bootloader.json'%(pack_boot_tools, GEN_IMAGE_TOOL, pack_boot_tools, dest_boot_dir,_BUILD_DIR, pack_boot_tools))
+ 	elif (os.path.exists(f'{dest_boot_dir}/bootloader.bin') == True):
+ 		logging.info(f'{bootloader_bin} not exist, could compile:')
+-		run_cmd('%s/cmake_Gen_image genfile -injsonfile %s/config.json -infile %s/bootloader.bin -outfile %s/bootloader.bin -genjson %s/partition_bootloader.json'%(pack_boot_tools, pack_boot_tools, dest_boot_dir,_BUILD_DIR, pack_boot_tools))
++		run_cmd('%s/%s genfile -injsonfile %s/config.json -infile %s/bootloader.bin -outfile %s/bootloader.bin -genjson %s/partition_bootloader.json'%(pack_boot_tools, GEN_IMAGE_TOOL, pack_boot_tools, dest_boot_dir,_BUILD_DIR, pack_boot_tools))
+ 	else:
+ 		pass
+ 
+diff --git a/middleware/boards/bk7258/bk7258_nosecurity.wrapper b/middleware/boards/bk7258/bk7258_nosecurity.wrapper
+index 7da462f1..6db000bc 100755
+--- a/middleware/boards/bk7258/bk7258_nosecurity.wrapper
++++ b/middleware/boards/bk7258/bk7258_nosecurity.wrapper
+@@ -35,6 +35,52 @@ partition_args = '16MB'
+ bootloader_json_inseq = '1,1,2,0,0,0'
+ bootloader_json_dirct = '%s/partition_bk7256_ota_a_new.json'%(pack_boot_tools)
+ 
++def _wsl_path(p):
++	p = p.replace('\\', '/')
++	if re.match('^[A-Za-z]:/', p):
++		return '/mnt/%s%s'%(p[0].lower(), p[2:])
++	m = re.match('^/([A-Za-z])/(.*)', p)   # MSYS style: /d/...
++	if m:
++		return '/mnt/%s/%s'%(m.group(1).lower(), m.group(2))
++	return p
++
++def _win_path(p):
++	"""Normalize an MSYS-style /d/... path to a Windows D:/... path."""
++	p = p.replace('\\', '/')
++	m = re.match('^/([A-Za-z])/(.*)', p)
++	if m:
++		return '%s:/%s'%(m.group(1).upper(), m.group(2))
++	return p
++
++_GEN_VIA_WSL = True
++
++def _tool_path(p):
++	"""Convert a path to the style the selected Gen_image tool understands."""
++	return _wsl_path(p) if _GEN_VIA_WSL else _win_path(p)
++
++def _gen_image_cmd():
++	"""Return a shell command prefix that runs the Gen_image pack tool.
++
++	On Windows the SDK's own cmake_Gen_image.exe crashes; prefer a native
++	Windows build pointed to by GEN_IMAGE_WIN_EXE, otherwise fall back to
++	the Linux binary via WSL. On Linux use the tool in place."""
++	global _GEN_VIA_WSL
++	tool = '%s/tools/env_tools/beken_packager/cmake_Gen_image'%(armino_path)
++	if sys.platform != 'win32':
++		_GEN_VIA_WSL = False
++		return tool
++	gen_win = os.environ.get('GEN_IMAGE_WIN_EXE')
++	if gen_win and os.path.isfile(gen_win):
++		_GEN_VIA_WSL = False
++		return gen_win
++	_GEN_VIA_WSL = True
++	return 'wsl.exe --cd "%s" %s'%(build_path, _wsl_path(tool))
++
++if sys.platform == 'win32':
++	GEN_IMAGE_TOOL = 'cmake_Gen_image.exe'
++else:
++	GEN_IMAGE_TOOL = 'cmake_Gen_image'
++
+ def parse_args():
+     description = '''Beken HID Downloader.'''
+     parser = argparse.ArgumentParser(description=description)
+@@ -197,7 +243,7 @@ def get_bootloader_path(armino_path, chip):
+         print('project %s/%s not in automatic_project list'%(project_name, armino_soc))
+         get_bootloader_json_for_inserting()
+ 
+-    os.system('%s/cmake_Gen_image genfile -injsonfile %s/config.json -infile %s/bootloader.bin -outfile %s/bootloader.bin -genjson %s/partition_bootloader.json'%(pack_boot_tools,pack_boot_tools, bootloader_no_insert_part_path,build_path, pack_boot_tools))
++    os.system('%s genfile -injsonfile %s -infile %s -outfile %s -genjson %s'%(_gen_image_cmd(), _tool_path('%s/config.json'%(pack_boot_tools)), _tool_path('%s/bootloader.bin'%(bootloader_no_insert_part_path)), _tool_path('%s/bootloader.bin'%(build_path)), _tool_path('%s/partition_bootloader.json'%(pack_boot_tools))))
+ 
+     bootloader_dest_path = '%s/bootloader.bin'%(build_path)
+ 
+@@ -297,7 +343,7 @@ def create_only_support_enc(src_file, dest_file, offset, size):
+ 
+ #Package according to json file
+ def pack_from_config_json(cfg_json, nm):
+-    pack_tool = '%s/tools/env_tools/beken_packager/cmake_Gen_image'%(armino_path)
++    pack_tool_cmd = _gen_image_cmd()
+     json_file = './cfg_temp.json'
+     infiles = ''
+     if 'pack' in nm:
+@@ -315,10 +361,14 @@ def pack_from_config_json(cfg_json, nm):
+     cfg_json_temp = json.dumps(cfg_json_temp, sort_keys=False, indent=4)
+     with open(json_file, 'w') as f:
+         f.write(cfg_json_temp)
+-    if os.path.exists(pack_tool.strip()) and os.path.isfile(pack_tool.strip()):
+-        os.system('%s genfile -injsonfile %s -infile %s -outfile %s.bin'%(pack_tool, json_file, infiles, outfile))
+-    else:
+-        raise 'pack_tool path error!'
++    json_file_arg = json_file
++    outfile_arg = '%s.bin'%(outfile)
++    infiles_arg = infiles
++    if _GEN_VIA_WSL:
++        json_file_arg = _wsl_path(json_file)
++        outfile_arg = _wsl_path(outfile + '.bin')
++        infiles_arg = ' '.join(_wsl_path(x) for x in infiles.split())
++    os.system('%s genfile -injsonfile %s -infile %s -outfile %s'%(pack_tool_cmd, json_file_arg, infiles_arg, outfile_arg))
+     os.remove(json_file)
+     gen_file_list.add('%s.bin'%(outfile))
+     return outfile
+@@ -328,7 +378,16 @@ def crc_from_config_json(cfg_json, nm):
+     crc_tool = '%s/tools/env_tools/beken_packager/cmake_encrypt_crc'%(armino_path)
+     nm_suffix = 'crc'
+     outfile = os.path.join(build_path, '%s_%s'%(nm, nm_suffix))
+-    if os.path.exists(crc_tool.strip()) and os.path.isfile(crc_tool.strip()):
++    crc_win = os.environ.get('ENCRYPT_CRC_WIN_EXE')
++    if sys.platform == 'win32' and crc_win and os.path.isfile(crc_win):
++        # native Windows build (output verified identical to the Linux tool).
++        # NOTE: paths contain no spaces -> no quotes (the tool's argv parser
++        # does not strip quotes, quoting breaks it under cmd.exe)
++        os.system('%s -crc %s'%(crc_win, _win_path('%s.bin'%(nm))))
++    elif sys.platform == 'win32':
++        # fall back to the Linux binary via WSL
++        os.system('wsl.exe --cd "%s" %s -crc "%s"'%(build_path, _wsl_path(crc_tool), _wsl_path('%s.bin'%(nm))))
++    elif os.path.exists(crc_tool.strip()) and os.path.isfile(crc_tool.strip()):
+         os.system("%s -crc %s.bin"%(crc_tool, nm))
+     else:
+         raise 'crc_tool path error!'
+diff --git a/middleware/soc/bk7258/bk7258.defconfig b/middleware/soc/bk7258/bk7258.defconfig
+index ae1836f7..3f92417b 100755
+--- a/middleware/soc/bk7258/bk7258.defconfig
++++ b/middleware/soc/bk7258/bk7258.defconfig
+@@ -18,7 +18,7 @@ CONFIG_FPGA=y
+ #@ Enable SPE
+ CONFIG_SPE=1
+ #@ Toolchain absolute path
+-CONFIG_TOOLCHAIN_PATH="/opt/gcc-arm-none-eabi-10.3-2021.10/bin"
++CONFIG_TOOLCHAIN_PATH="D:/Arm/GNUTOO~1/bin"
+ #@ System CPU count: 1: single core, 2: dual core, etc.
+ CONFIG_CPU_CNT=3
+ # CONFIG_ASSERT_HALT is not set
+diff --git a/middleware/soc/bk7258/toolchain-bk7258.cmake b/middleware/soc/bk7258/toolchain-bk7258.cmake
+index 2e4307ba..a6523c8e 100644
+--- a/middleware/soc/bk7258/toolchain-bk7258.cmake
++++ b/middleware/soc/bk7258/toolchain-bk7258.cmake
+@@ -2,16 +2,19 @@ set(CMAKE_SYSTEM_NAME Generic)
+ set(CMAKE_SYSTEM_PROCESSOR arm)
+ 
+ set(toolchain_path "$ENV{TOOLCHAIN_DIR}")
+-set(CMAKE_AR ${toolchain_path}/arm-none-eabi-ar)
+-set(CMAKE_C_COMPILER ${toolchain_path}/arm-none-eabi-gcc)
+-set(CMAKE_CXX_COMPILER ${toolchain_path}/arm-none-eabi-g++)
+-set(CMAKE_ASM_COMPILER ${toolchain_path}/arm-none-eabi-gcc)
++if(CMAKE_HOST_WIN32)
++    set(TOOLCHAIN_EXE_SUFFIX ".exe")
++endif()
++set(CMAKE_AR ${toolchain_path}/arm-none-eabi-ar${TOOLCHAIN_EXE_SUFFIX})
++set(CMAKE_C_COMPILER ${toolchain_path}/arm-none-eabi-gcc${TOOLCHAIN_EXE_SUFFIX})
++set(CMAKE_CXX_COMPILER ${toolchain_path}/arm-none-eabi-g++${TOOLCHAIN_EXE_SUFFIX})
++set(CMAKE_ASM_COMPILER ${toolchain_path}/arm-none-eabi-gcc${TOOLCHAIN_EXE_SUFFIX})
+ 
+-set(armino_objcopy ${toolchain_path}/arm-none-eabi-objcopy)
+-set(armino_readelf ${toolchain_path}/arm-none-eabi-readelf)
+-set(armino_nm ${toolchain_path}/arm-none-eabi-nm)
+-set(armino_objdump ${toolchain_path}/arm-none-eabi-objdump)
+-set(armino_toolchain_size ${toolchain_path}/arm-none-eabi-size)
++set(armino_objcopy ${toolchain_path}/arm-none-eabi-objcopy${TOOLCHAIN_EXE_SUFFIX})
++set(armino_readelf ${toolchain_path}/arm-none-eabi-readelf${TOOLCHAIN_EXE_SUFFIX})
++set(armino_nm ${toolchain_path}/arm-none-eabi-nm${TOOLCHAIN_EXE_SUFFIX})
++set(armino_objdump ${toolchain_path}/arm-none-eabi-objdump${TOOLCHAIN_EXE_SUFFIX})
++set(armino_toolchain_size ${toolchain_path}/arm-none-eabi-size${TOOLCHAIN_EXE_SUFFIX})
+ 
+ #add the libs in toolchain
+ link_libraries(libm.a) #contian sin() cos() ...
+diff --git a/middleware/soc/bk7258_cp1/bk7258_cp1.defconfig b/middleware/soc/bk7258_cp1/bk7258_cp1.defconfig
+index 955473a0..0d3123f1 100755
+--- a/middleware/soc/bk7258_cp1/bk7258_cp1.defconfig
++++ b/middleware/soc/bk7258_cp1/bk7258_cp1.defconfig
+@@ -62,7 +62,7 @@ CONFIG_MPU=y
+ # Compile/Build
+ #
+ #@ Toolchain absolute path
+-CONFIG_TOOLCHAIN_PATH="/opt/gcc-arm-none-eabi-10.3-2021.10/bin"
++CONFIG_TOOLCHAIN_PATH="D:/Arm/GNUTOO~1/bin"
+ #
+ # Debug
+ #
+diff --git a/middleware/soc/bk7258_cp1/toolchain-bk7258_cp1.cmake b/middleware/soc/bk7258_cp1/toolchain-bk7258_cp1.cmake
+index 98df601f..e446dfae 100644
+--- a/middleware/soc/bk7258_cp1/toolchain-bk7258_cp1.cmake
++++ b/middleware/soc/bk7258_cp1/toolchain-bk7258_cp1.cmake
+@@ -2,16 +2,19 @@ set(CMAKE_SYSTEM_NAME Generic)
+ set(CMAKE_SYSTEM_PROCESSOR arm)
+ 
+ set(toolchain_path "$ENV{TOOLCHAIN_DIR}")
+-set(CMAKE_AR ${toolchain_path}/arm-none-eabi-ar)
+-set(CMAKE_C_COMPILER ${toolchain_path}/arm-none-eabi-gcc)
+-set(CMAKE_CXX_COMPILER ${toolchain_path}/arm-none-eabi-g++)
+-set(CMAKE_ASM_COMPILER ${toolchain_path}/arm-none-eabi-gcc)
++if(CMAKE_HOST_WIN32)
++    set(TOOLCHAIN_EXE_SUFFIX ".exe")
++endif()
++set(CMAKE_AR ${toolchain_path}/arm-none-eabi-ar${TOOLCHAIN_EXE_SUFFIX})
++set(CMAKE_C_COMPILER ${toolchain_path}/arm-none-eabi-gcc${TOOLCHAIN_EXE_SUFFIX})
++set(CMAKE_CXX_COMPILER ${toolchain_path}/arm-none-eabi-g++${TOOLCHAIN_EXE_SUFFIX})
++set(CMAKE_ASM_COMPILER ${toolchain_path}/arm-none-eabi-gcc${TOOLCHAIN_EXE_SUFFIX})
+ 
+-set(armino_objcopy ${toolchain_path}/arm-none-eabi-objcopy)
+-set(armino_readelf ${toolchain_path}/arm-none-eabi-readelf)
+-set(armino_nm ${toolchain_path}/arm-none-eabi-nm)
+-set(armino_objdump ${toolchain_path}/arm-none-eabi-objdump)
+-set(armino_toolchain_size ${toolchain_path}/arm-none-eabi-size)
++set(armino_objcopy ${toolchain_path}/arm-none-eabi-objcopy${TOOLCHAIN_EXE_SUFFIX})
++set(armino_readelf ${toolchain_path}/arm-none-eabi-readelf${TOOLCHAIN_EXE_SUFFIX})
++set(armino_nm ${toolchain_path}/arm-none-eabi-nm${TOOLCHAIN_EXE_SUFFIX})
++set(armino_objdump ${toolchain_path}/arm-none-eabi-objdump${TOOLCHAIN_EXE_SUFFIX})
++set(armino_toolchain_size ${toolchain_path}/arm-none-eabi-size${TOOLCHAIN_EXE_SUFFIX})
+ 
+ #add the libs in toolchain
+ link_libraries(libm.a) #contian sin() cos() ...
+diff --git a/middleware/soc/bk7258_cp2/bk7258_cp2.defconfig b/middleware/soc/bk7258_cp2/bk7258_cp2.defconfig
+index e1d2de3c..c70dedc4 100755
+--- a/middleware/soc/bk7258_cp2/bk7258_cp2.defconfig
++++ b/middleware/soc/bk7258_cp2/bk7258_cp2.defconfig
+@@ -61,7 +61,7 @@ CONFIG_MPU=y
+ # Compile/Build
+ #
+ #@ Toolchain absolute path
+-CONFIG_TOOLCHAIN_PATH="/opt/gcc-arm-none-eabi-10.3-2021.10/bin"
++CONFIG_TOOLCHAIN_PATH="D:/Arm/GNUTOO~1/bin"
+ #
+ # Debug
+ #
+diff --git a/middleware/soc/bk7258_cp2/toolchain-bk7258_cp2.cmake b/middleware/soc/bk7258_cp2/toolchain-bk7258_cp2.cmake
+index 98df601f..e446dfae 100644
+--- a/middleware/soc/bk7258_cp2/toolchain-bk7258_cp2.cmake
++++ b/middleware/soc/bk7258_cp2/toolchain-bk7258_cp2.cmake
+@@ -2,16 +2,19 @@ set(CMAKE_SYSTEM_NAME Generic)
+ set(CMAKE_SYSTEM_PROCESSOR arm)
+ 
+ set(toolchain_path "$ENV{TOOLCHAIN_DIR}")
+-set(CMAKE_AR ${toolchain_path}/arm-none-eabi-ar)
+-set(CMAKE_C_COMPILER ${toolchain_path}/arm-none-eabi-gcc)
+-set(CMAKE_CXX_COMPILER ${toolchain_path}/arm-none-eabi-g++)
+-set(CMAKE_ASM_COMPILER ${toolchain_path}/arm-none-eabi-gcc)
++if(CMAKE_HOST_WIN32)
++    set(TOOLCHAIN_EXE_SUFFIX ".exe")
++endif()
++set(CMAKE_AR ${toolchain_path}/arm-none-eabi-ar${TOOLCHAIN_EXE_SUFFIX})
++set(CMAKE_C_COMPILER ${toolchain_path}/arm-none-eabi-gcc${TOOLCHAIN_EXE_SUFFIX})
++set(CMAKE_CXX_COMPILER ${toolchain_path}/arm-none-eabi-g++${TOOLCHAIN_EXE_SUFFIX})
++set(CMAKE_ASM_COMPILER ${toolchain_path}/arm-none-eabi-gcc${TOOLCHAIN_EXE_SUFFIX})
+ 
+-set(armino_objcopy ${toolchain_path}/arm-none-eabi-objcopy)
+-set(armino_readelf ${toolchain_path}/arm-none-eabi-readelf)
+-set(armino_nm ${toolchain_path}/arm-none-eabi-nm)
+-set(armino_objdump ${toolchain_path}/arm-none-eabi-objdump)
+-set(armino_toolchain_size ${toolchain_path}/arm-none-eabi-size)
++set(armino_objcopy ${toolchain_path}/arm-none-eabi-objcopy${TOOLCHAIN_EXE_SUFFIX})
++set(armino_readelf ${toolchain_path}/arm-none-eabi-readelf${TOOLCHAIN_EXE_SUFFIX})
++set(armino_nm ${toolchain_path}/arm-none-eabi-nm${TOOLCHAIN_EXE_SUFFIX})
++set(armino_objdump ${toolchain_path}/arm-none-eabi-objdump${TOOLCHAIN_EXE_SUFFIX})
++set(armino_toolchain_size ${toolchain_path}/arm-none-eabi-size${TOOLCHAIN_EXE_SUFFIX})
+ 
+ #add the libs in toolchain
+ link_libraries(libm.a) #contian sin() cos() ...
+diff --git a/tools/build_tools/armino_actions/core_ext.py b/tools/build_tools/armino_actions/core_ext.py
+index 3bdc6299..472841ee 100644
+--- a/tools/build_tools/armino_actions/core_ext.py
++++ b/tools/build_tools/armino_actions/core_ext.py
+@@ -192,7 +192,7 @@ def action_extensions(base_actions, project_path):
+ 		ensure_build_directory(args, ctx.info_name, True)
+ 
+ 	def validate_root_options(ctx, args, tasks):
+-		cur_dir = os.getcwd()
++		cur_dir = realpath(os.getcwd())
+ 		armino_path = os.environ['ARMINO_PATH']
+ 		armino_project_dir = os.environ.get('ARMINO_PROJECT_PATH')
+ 
+diff --git a/tools/build_tools/build_files/build_main.cmake b/tools/build_tools/build_files/build_main.cmake
+index 2b7f0672..14a58519 100755
+--- a/tools/build_tools/build_files/build_main.cmake
++++ b/tools/build_tools/build_files/build_main.cmake
+@@ -74,6 +74,12 @@ if(CONFIG_COMPILER_DISABLE_GCC8_WARNINGS)
+                                 "-Wno-int-in-bool-context")
+ endif()
+ 
++# Newer GCC (>=14) promotes these to errors; keep them as warnings for legacy code
++list(APPEND compile_options "-Wno-error=attributes"
++                            "-Wno-error=implicit-function-declaration"
++                            "-Wno-error=incompatible-pointer-types"
++                            "-Wno-error=int-conversion")
++
+ if(CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_DISABLE)
+     list(APPEND compile_definitions "-DNDEBUG")
+ endif()
+diff --git a/tools/build_tools/cmake/build.cmake b/tools/build_tools/cmake/build.cmake
+index 3c01a390..61214fb9 100644
+--- a/tools/build_tools/cmake/build.cmake
++++ b/tools/build_tools/cmake/build.cmake
+@@ -112,6 +112,7 @@ function(__build_set_default_build_specifications)
+ 
+                                     "-Wall"
+                                     "-Werror"
++                                    "-Wno-error"   # legacy codebase + newer GCC: keep warnings visible but non-fatal
+                                     "-Wno-address"
+                                     "-Wno-array-bounds"
+                                     "-Wno-format"
+diff --git a/tools/build_tools/cmake/kconfig.cmake b/tools/build_tools/cmake/kconfig.cmake
+index af46227a..0569fbd0 100644
+--- a/tools/build_tools/cmake/kconfig.cmake
++++ b/tools/build_tools/cmake/kconfig.cmake
+@@ -30,6 +30,10 @@ function(__kconfig_init)
+                     LOGIW(
+                     "Windows requires an MSYS2 version of gcc on the PATH to build mconf-armino. "
+                     "Consult the setup docs for BEKEN-ARMINO on Windows.")
++            elseif(NOT EXISTS "${armino_path}/tools/build_tools/kconfig/Makefile")
++                    message(WARNING
++                    "mconf-armino source not found in '${armino_path}/tools/build_tools/kconfig'. "
++                    "'menuconfig' will be unavailable, but normal builds are not affected.")
+             else()
+                 # Use the existing Makefile to build mconf (out of tree) when needed
+                 #
+diff --git a/tools/env_tools/beken_utils/scripts/gen_partition.py b/tools/env_tools/beken_utils/scripts/gen_partition.py
+index d56741a3..ff4cb1e0 100644
+--- a/tools/env_tools/beken_utils/scripts/gen_partition.py
++++ b/tools/env_tools/beken_utils/scripts/gen_partition.py
+@@ -7,7 +7,7 @@ from .common import *
+ from .partition import *
+ 
+ def gen_partitions_hdr_file(partition, out_partition_hdr_file):
+-    f = open(out_partition_hdr_file, 'w+')
++    f = open(out_partition_hdr_file, 'w+', newline='')
+ 
+     logging.debug(f'Create partition hdr file: {out_partition_hdr_file}')
+     f.write(get_license())
+@@ -91,7 +91,7 @@ def gen_partitions_hdr_file(partition, out_partition_hdr_file):
+     f.close()
+ 
+ def gen_partitions_layout_file(partition, out_partition_layout_file):
+-    f = open(out_partition_layout_file, 'w+')
++    f = open(out_partition_layout_file, 'w+', newline='')
+ 
+     logging.debug(f'Create partition layout file: {out_partition_layout_file}')
+     line = f'%-24s   %-10s   %-8s\r\n' %("name", "offset", "size")

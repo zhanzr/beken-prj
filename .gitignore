@@ -1,0 +1,13 @@
+# build outputs
+build/
+
+# machine-specific configuration
+config.local.mk
+
+# python
+__pycache__/
+*.pyc
+
+# dumps / temp
+*.bin.tmp
+flash_dump*

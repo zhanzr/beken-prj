@@ -1,0 +1,3 @@
+[submodule "vendor/bk_aidk"]
+	path = vendor/bk_aidk
+	url = git@github.com:bekencorp/bk_aidk.git

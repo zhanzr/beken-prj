@@ -1,0 +1,11 @@
+# Machine-specific overrides - copy this file to config.local.mk (gitignored)
+#
+# copy config.local.mk.example config.local.mk
+
+# Serial port number of the CH340 console/flasher (COM42 -> COM=42)
+COM = 42
+
+# Override tool locations if needed (defaults live in boards/<board>/board.mk)
+# GEN_IMAGE_WIN_EXE   = D:\tools\cmake_Gen_image.exe
+# ENCRYPT_CRC_WIN_EXE = D:\tools\cmake_encrypt_crc.exe
+# BK_LOADER           = D:\tools\bk_loader.exe
