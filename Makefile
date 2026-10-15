@@ -21,7 +21,7 @@ PATCH_STAMP := $(VENDOR_DIR)/build/.vendor-patched
 
 # NOTE: PROJECT_DIR/BUILD_DIR must stay RELATIVE to vendor/bk_aidk/bk_avdk/bk_idk
 # (the vendor build system string-concatenates them with its own root).
-REL_ROOT := ../../../
+REL_ROOT := ../../../../
 PROJECT_DIR_OURS := $(REL_ROOT)boards/$(BOARD)/projects/$(PROJECT)
 BUILD_DIR_REL    := $(REL_ROOT)build/$(BOARD)/$(PROJECT)
 
