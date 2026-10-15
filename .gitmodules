@@ -1,3 +1,5 @@
 [submodule "vendor/bk_aidk"]
 	path = vendor/bk_aidk
 	url = git@github.com:bekencorp/bk_aidk.git
+	# the worktree carries patches/ (see patches/ dir) - don't flag it dirty
+	ignore = dirty

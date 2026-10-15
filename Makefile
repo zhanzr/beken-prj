@@ -17,7 +17,7 @@ SOC     ?= bk7258
 
 VENDOR_DIR  := vendor/bk_aidk
 BOARD_DIR   := boards/$(BOARD)
-PATCH_STAMP := $(VENDOR_DIR)/build/.vendor-patched
+PATCH_STAMP := build/.vendor-patched
 
 # NOTE: PROJECT_DIR/BUILD_DIR must stay RELATIVE to vendor/bk_aidk/bk_avdk/bk_idk
 # (the vendor build system string-concatenates them with its own root).
