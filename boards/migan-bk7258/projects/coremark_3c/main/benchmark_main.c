@@ -38,6 +38,7 @@
 
 int coremark_main(void);
 
+
 static void bench_run(void)
 {
 	printf("compiler: %s\r\n", COMPILER_VERSION);
@@ -97,6 +98,8 @@ void user_app_main(void)
 	printf(">>> CPU0 done, starting cp1\r\n");
 
 	/* release cp1 at its link address */
+	bk_pm_cp1_auto_power_down_state_set(0x0);	/* disable cp1 auto-power-down */
+	bk_pm_module_vote_power_ctrl(PM_POWER_MODULE_NAME_CPU1, PM_POWER_MODULE_STATE_ON);
 	reset_cpu1_core(0x021B0000, 1);
 	mb_send(CP1_MB_CHNL_IPC, MB_CMD_GO);
 
@@ -107,6 +110,7 @@ void user_app_main(void)
 	printf(">>> CPU1 done, starting cp2\r\n");
 
 	/* power cp2's domain, then release it at its link address */
+	bk_pm_module_vote_power_ctrl(PM_POWER_MODULE_NAME_CPU2, PM_POWER_MODULE_STATE_ON);
 	bk_pm_module_vote_power_ctrl(PM_POWER_MODULE_NAME_CPU2, PM_POWER_MODULE_STATE_ON);
 	bk_pm_module_vote_power_ctrl(PM_POWER_MODULE_NAME_CPU2, PM_POWER_MODULE_STATE_ON);
 	reset_cpu2_core(0x02220000, 1);
