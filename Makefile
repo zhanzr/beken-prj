@@ -33,7 +33,7 @@ export ENCRYPT_CRC_WIN_EXE
 export BK_LOADER
 
 # Projects that live in this repo (anything else falls back to the vendor tree)
-OUR_PROJECTS = blink_hello pwm_test
+OUR_PROJECTS = blink_hello pwm_test dhry_3c coremark_3c
 
 .PHONY: build patches flash clean help
 

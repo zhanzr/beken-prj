@@ -1,0 +1,4 @@
+#@ run CPU0 at its max frequency
+CONFIG_CPU_FREQ_HZ=240000000
+#@ long watchdog for the long benchmark runs
+CONFIG_TASK_WDT_PERIOD_MS=300000
