@@ -1,96 +1,49 @@
-# BK7258 Benchmarks (migan-bk7258)
+# BK7258 Benchmarks (migan-bk7258) - measured results
 
-Benchmark projects in `boards/migan-bk7258/projects/`:
+Measured 2026-10-16. Firmware: `dhry_3c` / `coremark_3c` (Dhrystone 2.1,
+2,000,000 runs; CoreMark 1.0.1, 1800 iterations). GCC arm-none-eabi 15.3.1,
+flags `-Ofast -funroll-all-loops -fgcse-sm -finline-limit=500 -fno-schedule-insns`.
 
-| Project | Suite | Notes |
-|---------|-------|-------|
-| `dhry_3c` | Dhrystone 2.1 | 2,000,000 runs per core |
-| `coremark_3c` | CoreMark 1.0.1 (EEMBC) | 7200 iterations per core |
+## Results (cores run one-by-one)
 
-Design: every core runs the same suite at its maximum frequency
-(cp0 = 240 MHz, cp1/cp2 = 480 MHz; the runner votes the system PLL to
-480 MHz via `bk_pm_module_vote_cpu_freq`). Per-component optimization flags
-(same set as the reference projects `f4-demo` / `hlk-w800-kit`):
+| Core | Config freq | Dhrystone/s | DMIPS/MHz (claimed) | CoreMark/s |
+|------|-------------|-------------|---------------------|------------|
+| CPU0 | 240 MHz | **604,595** | 1.434 | **648.88** |
+| CPU1 | "480 MHz" (unverified) | **124,843** | 0.148 (vs claimed) | **~143** (timing-derived) |
+| CPU2 | - | does not run (blocked) | - | - |
 
-```
--Ofast -funroll-all-loops -fgcse-sm -finline-limit=500 -fno-schedule-insns
-```
+## Analysis
 
-Compiler: GCC (arm-none-eabi) 15.3.1.
+1. **CPU0** is fully working: XIP execution with caches, both benchmarks
+   validated ("Correct operation validated" for CoreMark).
+2. **CPU1** boots (power-vote not required; released directly at its XIP link
+   address 0x021b0000) and runs the full benchmark with correct validation.
+   Measured throughput is **4.84x lower than CPU0**. Contributors visible in
+   the logs: cp1's flash-driver client fails to connect
+   (`flash-drv-client connect failed -8`) and cp1's PSRAM autodetect fails -
+   cp1 fetches code/data through a slow, un-optimized path. The "480 MHz"
+   frequency is the configured value, not independently verified; the measured
+   0.148 DMIPS/MHz (at the claimed clock) reflects the memory-path penalty.
+3. **CPU2** does not execute its main() despite: release at its exact link
+   address (0x02220000, verified from its vector table and linker map),
+   power-domain vote ON, and the raw image verified present at its partition
+   offset (0x451000, readback-verified). cp2 executes from PSRAM; its boot
+   requires the closed pm library's copy/XIP setup, whose cp1-boot sibling
+   flow is also broken (boot address 0x0). Needs Beken support or the pm
+   library source.
 
-Build & flash:
+## Multi-core mechanics that DO work
 
-```bash
-make build BOARD=migan-bk7258 PROJECT=dhry_3c
-make flash BOARD=migan-bk7258 PROJECT=dhry_3c COM=42
-```
+- All three images build from one project (per-core `CONFIG_SYS_CPUn` guards).
+- cp0 releases cp1 via `reset_cpu1_core(0x021b0000, 1)` - cp1 boots and runs.
+- cp0<->cp1 UART logging works (AMP asynclog, `cpu1:`-prefixed lines).
+- The cp0->cp1 mailbox GO has a delivery issue (channel direction semantics,
+  cp1 runs via its timeout fallback - by design).
 
-## Results
+## Operational notes
 
-### Dhrystone 2.1 (measured 2026-10-16)
-
-| Core | Frequency | Dhrystones/s | DMIPS/MHz |
-|------|-----------|--------------|-----------|
-| CPU0 | config 240 MHz | 148,699 | 0.353 |
-| CPU1 | blocked (see below) | - | - |
-| CPU2 | blocked (see below) | - | - |
-
-The DMIPS/MHz figure is dominated by XIP flash execution (code fetched from
-SPI NOR through the cache); treat it as an end-to-end number, not a pure
-core-speed number.
-
-### CoreMark 1.0.1
-
-Built; on-board measurement pending (flash blocked by the wedged-board issue
-below at the time of writing).
-
-## Multi-core status: cp1/cp2 boot is blocked by the closed pm library
-
-Evidence gathered (all logs on UART0, AMP asynclog tags each core `cpu0:`,
-`cpu1:`, `cpu2:`):
-
-1. cp1 **executes**: after flashing beken_genie, cp1-tagged logs
-   (`cpu1:media_ma:...`) appear - the AMP machinery and per-core logging work.
-2. cp1 does **not** restart into a newly flashed image: after re-flashing,
-   cp1 keeps executing stale code from its caches/XIP (media mailbox send
-   failures continue), because nothing reset cp1.
-3. `start_cpu1_core()` (open code) resolves the cp1 boot address via
-   `get_partition_addr(1)` to `0x02000000 + 0x1c0000` on this board - which
-   decodes to the **secondary cpu0 A/B slot**, not to `primary_cpu1_app`
-   (0x2db000, interleaved XIP 0x022b0000 where cp1's image is linked and
-   where its linker script places FLASH).
-4. Releasing cp1 directly at its link address
-   (`reset_cpu1_core(0x022B0000, 1)`, bypassing the broken lookup) did not
-   restart an already-running cp1.
-5. The pm-library boot flow (`bk_pm_module_vote_boot_cp1_ctrl`) loops
-   forever with its own boot address = **0x0**:
-   ```
-   boot_cp1 9 0 0x0 [0][0x28014244]E_1
-   cp0 boot cp1[0] time out, boot cp1 fail!!!
-   ```
-   This flow is inside the closed-source pm library.
-
-Tried without success: pm vote only / direct release only / both;
-`CONFIG_SYS_CPU1_OFFSET` = beken_genie value and defconfig value;
-`bootcore 1 1` CLI command (same pm path).
-
-### Conclusion
-
-- CPU0 benchmarking: fully working (both suites).
-- cp1/cp2: images build correctly and are packed into `all-app.bin`
-  (`app1.bin`, `app2.bin`); cp1 is verifiably executing; but **reliable
-  cp1/cp2 reset/boot is broken in this SDK snapshot** (closed pm lib boots
-  from address 0x0; open-source reset path resolves the wrong partition).
-  Needs Beken support or the pm library source. The benchmark projects will
-  run the cp1/cp2 parts automatically once slave-core boot works.
-
-## Side effects to be aware of
-
-- When the cp1 boot vote is active, the pm library retries forever and spams
-  UART0 (~600 lines/s). During that spam `bk_loader` cannot sync with the ROM
-  ("GetBus fail"). Recovery: press **RST** (or unplug USB) and re-flash
-  quickly, or use the GUI tool.
-- `CONFIG_PM_SUPER_DEEP_SLEEP` is on by default: an idle board may enter
-  super deep sleep (everything dark, UART dead). RST revives it.
-- Reflashing does not reset cp1/cp2 - a running slave core keeps executing
-  stale code until cp0 explicitly resets it (or RST is pressed).
+- Reflashing does not reset cp1/cp2: a running slave core keeps executing
+  stale code from its caches. RST (or a cp0-side reset) clears it.
+- The pm library's cp1-boot vote, when cast, spams UART (~600 lines/s) and
+  blocks re-flashing ("GetBus fail"); RST + quick re-flash recovers.
+- `CONFIG_PM_SUPER_DEEP_SLEEP` (default on) darkens an idle board; RST revives.

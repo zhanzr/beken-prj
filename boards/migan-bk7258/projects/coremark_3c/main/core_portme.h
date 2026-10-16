@@ -35,7 +35,7 @@ void uart_printf(const char *fmt, ...);
 
 #define FLAGS_STR "-Ofast -funroll-all-loops -fgcse-sm -finline-limit=500 -fno-schedule-insns"
 #ifndef ITERATIONS
-#define ITERATIONS 7200
+#define ITERATIONS 1800
 #endif
 
 typedef uint32_t CORE_TICKS;

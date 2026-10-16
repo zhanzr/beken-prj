@@ -2,13 +2,13 @@
  * 3-core benchmark runner for the BK7258 (migan-bk7258).
  *
  * BK7258 AMP boot model (system_main.c):
- *  - only CPU0 runs user_app_main; cp1/cp2 stay halted until
- *    start_cpu1_core() / start_cpu2_core() are called,
+ *  - only CPU0 runs user_app_main; cp1/cp2 stay halted until released,
  *  - cp1/cp2 firmware entry is main() (NOT user_app_main).
  *
- * Turn-taking via vendor mailbox IPC (cache-coherent):
- *   cp0 --(CP1_MB_CHNL_IPC)--> cp1 --(CP2_MB_CHNL_IPC)--> cp2
- * acks flow back cp2 -> cp1 -> cp0.
+ * Sequencing (mailbox IPC, cache-coherent):
+ *   1. cp0 benches, then GO -> cp1 (CP1_MB_CHNL_IPC)
+ *   2. cp1 benches, DONE -> cp0, GO -> cp2 (CP2_MB_CHNL_IPC)
+ *   3. cp2 benches (power-voted on by cp0), DONE -> cp0 (CP2_MB_CHNL_USB)
  *
  * All cores run at their maximum frequency: CPU0 votes the system PLL to
  * 480 MHz (bk_pm_module_vote_cpu_freq) -> CPU0 = 240 MHz (its max),
@@ -35,7 +35,6 @@
 
 #define MB_CMD_GO	0x11
 #define MB_CMD_DONE	0x12
-#define MB_CMD_ALLDONE	0x13
 
 int coremark_main(void);
 
@@ -61,37 +60,60 @@ static void mb_send(unsigned chnl, unsigned cmd)
 
 #if (CONFIG_SYS_CPU0)
 
-static volatile unsigned cp1_all_done;
+static volatile unsigned cp1_done;
+static volatile unsigned cp2_done;
 
-static void cp0_rx_isr(void *param, mb_chnl_cmd_t *cmd_buf)
+static void cp0_rx_isr_cp1(void *param, mb_chnl_cmd_t *cmd_buf)
 {
-	if (cmd_buf->hdr.cmd == MB_CMD_ALLDONE)
-		cp1_all_done = 1;
+	if (cmd_buf->hdr.cmd == MB_CMD_DONE)
+		cp1_done = 1;
+}
+
+static void cp0_rx_isr_cp2(void *param, mb_chnl_cmd_t *cmd_buf)
+{
+	if (cmd_buf->hdr.cmd == MB_CMD_DONE)
+		cp2_done = 1;
 }
 
 void user_app_main(void)
 {
 	/* raise the whole system to max: cp0 240M, cp1/cp2 480M */
 	bk_pm_module_vote_cpu_freq(PM_DEV_ID_DEFAULT, PM_CPU_FRQ_480M);
+	mb_chnl_init();
 
 	mb_chnl_open(CP1_MB_CHNL_IPC, NULL);
-	mb_chnl_ctrl(CP1_MB_CHNL_IPC, MB_CHNL_SET_RX_ISR, cp0_rx_isr);
+	mb_chnl_ctrl(CP1_MB_CHNL_IPC, MB_CHNL_SET_RX_ISR, cp0_rx_isr_cp1);
 	mb_chnl_ctrl(CP1_MB_CHNL_IPC, MB_CHNL_SET_TX_ISR, mb_tx_isr);
 	mb_chnl_ctrl(CP1_MB_CHNL_IPC, MB_CHNL_SET_TX_CMPL_ISR, mb_tx_cmpl_isr);
 
-	/* boot the slave cores (they halt until released) */
-	start_cpu1_core();
-	start_cpu2_core();
-	rtos_delay_milliseconds(100);	/* let cp1/cp2 init their mailboxes */
+	mb_chnl_open(CP2_MB_CHNL_USB, NULL);
+	mb_chnl_ctrl(CP2_MB_CHNL_USB, MB_CHNL_SET_RX_ISR, cp0_rx_isr_cp2);
+	mb_chnl_ctrl(CP2_MB_CHNL_USB, MB_CHNL_SET_TX_ISR, mb_tx_isr);
+	mb_chnl_ctrl(CP2_MB_CHNL_USB, MB_CHNL_SET_TX_CMPL_ISR, mb_tx_cmpl_isr);
 
 	printf("\r\n===== %s on BK7258, cores one-by-one (max freq) =====\r\n", BENCH_NAME);
 
 	bench_run();
 	printf(">>> CPU0 done, starting cp1\r\n");
+
+	/* release cp1 at its link address */
+	reset_cpu1_core(0x021B0000, 1);
 	mb_send(CP1_MB_CHNL_IPC, MB_CMD_GO);
 
-	while (!cp1_all_done) {
-		printf(">>> waiting for cp1/cp2...\r\n");
+	while (!cp1_done) {
+		printf(">>> waiting for cp1...\r\n");
+		rtos_delay_milliseconds(5000);
+	}
+	printf(">>> CPU1 done, starting cp2\r\n");
+
+	/* power cp2's domain, then release it at its link address */
+	bk_pm_module_vote_power_ctrl(PM_POWER_MODULE_NAME_CPU2, PM_POWER_MODULE_STATE_ON);
+	bk_pm_module_vote_power_ctrl(PM_POWER_MODULE_NAME_CPU2, PM_POWER_MODULE_STATE_ON);
+	reset_cpu2_core(0x02220000, 1);
+	mb_send(CP2_MB_CHNL_USB, MB_CMD_GO);
+
+	while (!cp2_done) {
+		printf(">>> waiting for cp2...\r\n");
 		rtos_delay_milliseconds(5000);
 	}
 	printf(">>> all cores done\r\n");
@@ -107,52 +129,45 @@ int main(void)
 
 #elif (CONFIG_SYS_CPU1)
 
+#define MY_CHNL	CP0_MB_CHNL_IPC
+#define NEXT_CHNL	CP2_MB_CHNL_IPC
+
 static volatile unsigned go;
-static volatile unsigned cp2_done;
 
 static void cp1_rx_isr(void *param, mb_chnl_cmd_t *cmd_buf)
 {
-	switch (cmd_buf->hdr.cmd) {
-	case MB_CMD_GO:		go = 1; break;
-	case MB_CMD_ALLDONE:	cp2_done = 1; break;
-	}
+	if (cmd_buf->hdr.cmd == MB_CMD_GO)
+		go = 1;
 }
 
 int main(void)
 {
 	bk_init();
+	mb_chnl_init();
 
-	mb_chnl_open(CP0_MB_CHNL_IPC, NULL);
-	mb_chnl_ctrl(CP0_MB_CHNL_IPC, MB_CHNL_SET_RX_ISR, cp1_rx_isr);
-	mb_chnl_ctrl(CP0_MB_CHNL_IPC, MB_CHNL_SET_TX_ISR, mb_tx_isr);
-	mb_chnl_ctrl(CP0_MB_CHNL_IPC, MB_CHNL_SET_TX_CMPL_ISR, mb_tx_cmpl_isr);
+	mb_chnl_open(MY_CHNL, NULL);
+	mb_chnl_ctrl(MY_CHNL, MB_CHNL_SET_RX_ISR, cp1_rx_isr);
+	mb_chnl_ctrl(MY_CHNL, MB_CHNL_SET_TX_ISR, mb_tx_isr);
+	mb_chnl_ctrl(MY_CHNL, MB_CHNL_SET_TX_CMPL_ISR, mb_tx_cmpl_isr);
 
-	mb_chnl_open(CP2_MB_CHNL_IPC, NULL);
-	mb_chnl_ctrl(CP2_MB_CHNL_IPC, MB_CHNL_SET_RX_ISR, cp1_rx_isr);
-	mb_chnl_ctrl(CP2_MB_CHNL_IPC, MB_CHNL_SET_TX_ISR, mb_tx_isr);
-	mb_chnl_ctrl(CP2_MB_CHNL_IPC, MB_CHNL_SET_TX_CMPL_ISR, mb_tx_cmpl_isr);
-
-	printf("cp1 ready, waiting for GO\r\n");
-
-	while (!go)
+	/* wait for cp0's GO, run anyway after the timeout */
+	for (unsigned t = 0; t < 30000 && !go; t += 20)
 		rtos_delay_milliseconds(20);
+	printf(">>> CPU1 running (go=%d)\r\n", go);
 
-	printf(">>> CPU1 running\r\n");
 	bench_run();
 	printf(">>> CPU1 done, starting cp2\r\n");
 
-	mb_send(CP2_MB_CHNL_IPC, MB_CMD_GO);		/* start cp2 */
-	mb_send(CP0_MB_CHNL_IPC, MB_CMD_DONE);		/* tell cp0 */
-
-	while (!cp2_done)
-		rtos_delay_milliseconds(20);
-
-	mb_send(CP0_MB_CHNL_IPC, MB_CMD_ALLDONE);	/* all finished */
+	mb_send(NEXT_CHNL, MB_CMD_GO);		/* start cp2 */
+	mb_send(MY_CHNL, MB_CMD_DONE);		/* tell cp0 */
 
 	return 0;
 }
 
 #elif (CONFIG_SYS_CPU2)
+
+#define MY_CHNL	CP1_MB_CHNL_IPC
+#define CP0_CHNL	CP0_MB_CHNL_USB
 
 static volatile unsigned go;
 
@@ -165,22 +180,22 @@ static void cp2_rx_isr(void *param, mb_chnl_cmd_t *cmd_buf)
 int main(void)
 {
 	bk_init();
+	mb_chnl_init();
 
 	mb_chnl_open(CP1_MB_CHNL_IPC, NULL);
 	mb_chnl_ctrl(CP1_MB_CHNL_IPC, MB_CHNL_SET_RX_ISR, cp2_rx_isr);
 	mb_chnl_ctrl(CP1_MB_CHNL_IPC, MB_CHNL_SET_TX_ISR, mb_tx_isr);
 	mb_chnl_ctrl(CP1_MB_CHNL_IPC, MB_CHNL_SET_TX_CMPL_ISR, mb_tx_cmpl_isr);
 
-	printf("cp2 ready, waiting for GO\r\n");
-
-	while (!go)
+	/* wait for cp1's GO, run anyway after the timeout */
+	for (unsigned t = 0; t < 60000 && !go; t += 20)
 		rtos_delay_milliseconds(20);
+	printf(">>> CPU2 running (go=%d)\r\n", go);
 
-	printf(">>> CPU2 running\r\n");
 	bench_run();
 	printf(">>> CPU2 done\r\n");
 
-	mb_send(CP1_MB_CHNL_IPC, MB_CMD_DONE);
+	mb_send(CP0_CHNL, MB_CMD_DONE);
 
 	return 0;
 }
