@@ -1,11 +1,9 @@
+#@ cp0: minimal (LDO33/backlight on cp0; the LCD stack runs on cp1)
 #@ Enable Override Flash Partition
 CONFIG_OVERRIDE_FLASH_PARTITION=y
 #@ Cpu1 core offset address default 0x2e0000
 CONFIG_SYS_CPU1_OFFSET=0x21b0000
-#@ enable the LCD subsystem (parent) + the SPI LCD subsystem (dual lcd mode: 2 panels)
+#@ run CPU0 at its max frequency
+CONFIG_CPU_FREQ_HZ=240000000
+#@ PWM for the backlight
 CONFIG_PWM=y
-CONFIG_LCD=y
-CONFIG_LCD_SPI=y
-CONFIG_LCD_SPI_DEVICE_NUM=2
-#@ the two GC9D01 160x160 panels
-CONFIG_LCD_SPI_GC9D01=y
