@@ -515,6 +515,10 @@ static void rec_hw_start(void)
 	adc_dma = bk_dma_alloc(DMA_DEV_AUDIO);
 	bk_dma_init(adc_dma, &cfg);
 	bk_dma_set_transfer_len(adc_dma, RING_BYTES);
+#if (CONFIG_SPE)
+	bk_dma_set_dest_sec_attr(adc_dma, DMA_ATTR_SEC);
+	bk_dma_set_src_sec_attr(adc_dma, DMA_ATTR_SEC);
+#endif
 	bk_dma_register_isr(adc_dma, NULL, adc_dma_finish_isr);
 	bk_dma_enable_finish_interrupt(adc_dma);
 
@@ -550,9 +554,15 @@ static void do_record(void)
 		if (err != kNoErr) {
 			uint32_t remain = bk_dma_get_remain_len(adc_dma);
 			uint32_t status = 0;
+			uint32_t f0 = 0, f1 = 0, f2 = 0, f3 = 0;
 
 			bk_aud_adc_get_status(&status);
-			printf("rec: WAIT timeout (remain=%u adc_st=0x%x)\r\n", remain, status);
+			bk_aud_adc_get_fifo_data(&f0);
+			bk_aud_adc_get_fifo_data(&f1);
+			bk_aud_adc_get_fifo_data(&f2);
+			bk_aud_adc_get_fifo_data(&f3);
+			printf("rec: WAIT timeout (remain=%u st=0x%x fifo=%04x %04x %04x %04x)\r\n",
+				remain, status, f0 & 0xffff, f1 & 0xffff, f2 & 0xffff, f3 & 0xffff);
 			if (++timeouts >= 3) {
 				printf("rec: ABORT (adc dead)\r\n");
 				break;
@@ -624,6 +634,10 @@ static void play_hw_start(void)
 	dac_dma = bk_dma_alloc(DMA_DEV_AUDIO);
 	bk_dma_init(dac_dma, &cfg);
 	bk_dma_set_transfer_len(dac_dma, RING_BYTES);
+#if (CONFIG_SPE)
+	bk_dma_set_dest_sec_attr(dac_dma, DMA_ATTR_SEC);
+	bk_dma_set_src_sec_attr(dac_dma, DMA_ATTR_SEC);
+#endif
 	bk_dma_register_isr(dac_dma, NULL, dac_dma_finish_isr);
 	bk_dma_enable_finish_interrupt(dac_dma);
 
