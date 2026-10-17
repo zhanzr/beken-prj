@@ -1,0 +1,10 @@
+#@ Enable Override Flash Partition
+CONFIG_OVERRIDE_FLASH_PARTITION=y
+#@ Cpu1 core offset address default 0x2e0000
+CONFIG_SYS_CPU1_OFFSET=0x21b0000
+#@ run CPU0 at its max frequency
+CONFIG_CPU_FREQ_HZ=240000000
+CONFIG_AUDIO=y
+CONFIG_AUDIO_ADC=y
+CONFIG_AUDIO_DAC=y
+CONFIG_GENERAL_DMA=y
