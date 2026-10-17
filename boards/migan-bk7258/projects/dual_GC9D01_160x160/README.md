@@ -1,4 +1,4 @@
-# dual_lcd_test
+# dual_GC9D01_160x160
 
 Drives the two GC9D01 SPI LCD modules of the migan-bk7258 board from cp0,
 **alternating the driving method each pass: SW (GPIO bit-bang) => HW
@@ -60,11 +60,11 @@ Notes:
 
 ```
 cd D:/armino/beken-prj
-make build BOARD=migan-bk7258 PROJECT=dual_lcd_test
+make build BOARD=migan-bk7258 PROJECT=dual_GC9D01_160x160
 
 D:/board_database/main-migan-BK7258/BEKEN_BKFIL_V2.1.12.2_20251030/bk_loader.exe ^
     download -p 42 -b 1500000 ^
-    -i D:/armino/beken-prj/build/migan-bk7258/dual_lcd_test/bk7258/all-app.bin -s 0
+    -i D:/armino/beken-prj/build/migan-bk7258/dual_GC9D01_160x160/bk7258/all-app.bin -s 0
 ```
 
 Only the cp0 image (`all-app.bin` @ 0x0) needs flashing; cp1/cp2 stay

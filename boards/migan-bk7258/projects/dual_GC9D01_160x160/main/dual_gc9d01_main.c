@@ -1,5 +1,5 @@
 /*
- * dual_lcd_test - drive the two GC9D01 SPI LCD modules, alternating the
+ * dual_GC9D01_160x160 - drive the two GC9D01 SPI LCD modules, alternating the
  * driving method each pass: 'SW' (GPIO bit-bang) => 'HW' (QSPI units,
  * 480M/7) => 'SW' => 'HW' ...
  *
@@ -583,7 +583,7 @@ static void push_both(bool hw)
 void user_app_main(void)
 {
 #if (CONFIG_SYS_CPU0)
-	printf("\r\n===== dual_lcd_test on BK7258 (bit-bang) =====\r\n");
+	printf("\r\n===== dual_GC9D01_160x160 on BK7258 (SW-HW alt) =====\r\n");
 
 	/* P52 = LDO33_EN: powers the LCD modules + backlight rail */
 	bk_gpio_driver_init();
@@ -658,7 +658,7 @@ void user_app_main(void)
 	}
 #else
 	/* only cp0 drives the panels in this test */
-	printf("dual_lcd_test: idle on this core\r\n");
+	printf("dual_GC9D01_160x160: idle on this core\r\n");
 #endif
 }
 

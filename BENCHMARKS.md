@@ -1,6 +1,6 @@
 # BK7258 Benchmarks (migan-bk7258) - final measured results
 
-Measured 2026-10-16. Firmware: `dhry_3c` / `coremark_3c` (Dhrystone 2.1,
+Measured 2026-10-16. Firmware: `dhry_2c` / `coremark_2c` (Dhrystone 2.1,
 2,000,000 runs; CoreMark 1.0.1, 7200 iterations). GCC arm-none-eabi 15.3.1,
 flags `-Ofast -funroll-all-loops -fgcse-sm -finline-limit=500 -fno-schedule-insns`.
 Cores run one-by-one; all numbers from UART capture, flash readback-verified.
@@ -50,7 +50,7 @@ Cores run one-by-one; all numbers from UART capture, flash readback-verified.
 - `CONFIG_PM_SUPER_DEEP_SLEEP` (default on) darkens an idle board; RST
   revives it.
 
-## dual_lcd_test findings (2026-10-17, evening)
+## dual_GC9D01_160x160 findings (2026-10-17, evening)
 
 The dual-LCD driving architecture, fully traced:
 
@@ -62,7 +62,7 @@ The dual-LCD driving architecture, fully traced:
   (CONFIG_LCD_SPI_GC9D01=1 in the cp1 sdkconfig; the cp0 build does not
   have it). cp0 opens the panels via media_app_lvgl_open(&lcd_open)
   which votes cp1 boot and forwards the open to cp1's media service.
-- dual_lcd_test currently runs the same driver on **cp0** (the cp0 build
+- dual_GC9D01_160x160 currently runs the same driver on **cp0** (the cp0 build
   now registers the GC9D01 via the project Kconfig.projbuild). The
   backlight works (LDO33 rail P52 + P25=PWM5 @ 30%), but the panel
   SPI-over-QSPI writes stall (qspi_ll_wait_cmd_done timeout,
@@ -72,6 +72,6 @@ The dual-LCD driving architecture, fully traced:
 
 Next steps: either port the remaining cp1-side display init
 (bk_peripheral_init + the QSPI clock/pad config) into the cp0-driven
-test, or move the pattern push into dual_lcd_test's cp1 firmware
+test, or move the pattern push into dual_GC9D01_160x160's cp1 firmware
 (the cp1 build already has the full GC9D01 driver). The vendor LCD
 guide: docs.bekencorp.com bk_avdk bk7258 display/lcd_user_guide.

@@ -3,4 +3,4 @@
 cmake_minimum_required(VERSION 3.5)
 
 include($ENV{ARMINO_PATH}/tools/build_tools/cmake/project.cmake)
-project(coremark_3c)
+project(dual_GC9D01_160x160)

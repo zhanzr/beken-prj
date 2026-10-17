@@ -1,6 +1,6 @@
 set(incs .)
 set(srcs
-    dual_lcd_test_main.c
+    dual_gc9d01_main.c
     )
 
 if (CONFIG_OVERRIDE_FLASH_PARTITION)

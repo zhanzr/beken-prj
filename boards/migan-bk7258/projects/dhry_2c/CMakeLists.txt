@@ -3,4 +3,4 @@
 cmake_minimum_required(VERSION 3.5)
 
 include($ENV{ARMINO_PATH}/tools/build_tools/cmake/project.cmake)
-project(dual_lcd_test)
+project(dhry_2c)

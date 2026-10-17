@@ -1,4 +1,4 @@
-menu "dual_lcd_test panel config"
+menu "dual_GC9D01_160x160 panel config"
 
 config LCD_SPI_GC9D01
 	bool "Enable LCD_SPI_GC9D01 panel (160x160, dual lcd mode)"

@@ -41,7 +41,7 @@ int coremark_main(void);
 
 static void bench_run(void)
 {
-	printf("compiler: %s\r\n", COMPILER_NAME);
+	printf("compiler: %s\r\n", COMPILER_VERSION);
 	printf("flags   : %s\r\n", COMPILER_FLAGS);
 	printf("cpu Hz  : %d (config)\r\n", BENCH_CPU_HZ);
 
