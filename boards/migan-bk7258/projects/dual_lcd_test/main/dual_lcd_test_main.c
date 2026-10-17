@@ -1,0 +1,156 @@
+/*
+ * dual_lcd_test - drive the two GC9D01 SPI LCD modules (dual lcd mode)
+ *
+ * The board carries two GC9D01 160x160 panels on the QSPI-backed SPI
+ * interfaces. CONFIG_LCD_SPI_DEVICE_NUM=2 makes lcd_driver_init() bring up
+ * BOTH modules (LCD_SPI_ID0 = panel 1, LCD_SPI_ID1 = panel 2); the same
+ * RGB565 test frame is then pushed to each panel with
+ * lcd_spi_display_frame().
+ *
+ * Test patterns (ported from the ch32v307 nv3030b_md183 project):
+ *   checkerboard stress, primary solid fills, color bars, HSV gradient.
+ * The panels have no touch; P25 = shared LCD backlight (high active).
+ */
+
+#include <stdio.h>
+#include <string.h>
+#include "bk_private/bk_init.h"
+#include <components/system.h>
+#include <os/os.h>
+#include <driver/gpio.h>
+#include <driver/lcd.h>
+#include <driver/lcd_spi.h>
+#include <driver/pwm.h>
+#include "gpio_driver.h"
+
+#define LCD_W		160
+#define LCD_H		160
+
+#define LCD0		0		/* LCD_SPI_ID0: panel 1 */
+#define LCD1		1		/* LCD_SPI_ID1: panel 2 */
+
+/* P25 = shared LCD backlight, high active, default-muxed to QSPI */
+#define BL_GPIO		GPIO_25
+
+static uint16_t fb[LCD_W * LCD_H];
+
+static void fb_fill(uint16_t c)
+{
+	for (uint32_t i = 0; i < LCD_W * LCD_H; i++)
+		fb[i] = c;
+}
+
+static void fb_checkerboard(void)
+{
+	for (uint32_t y = 0; y < LCD_H; y++)
+		for (uint32_t x = 0; x < LCD_W; x++)
+			fb[y * LCD_W + x] = ((x ^ y) & 1) ? 0x0000 : 0xFFFF;
+}
+
+static void fb_color_bars(void)
+{
+	static const uint16_t bars[8] = {
+		0xF800, 0x07E0, 0x001F, 0xFFE0,
+		0xF81F, 0x07FF, 0xFFFF, 0x0000,
+	};
+	for (uint32_t y = 0; y < LCD_H; y++)
+		for (uint32_t x = 0; x < LCD_W; x++)
+			fb[y * LCD_W + x] = bars[x * 8 / LCD_W];
+}
+
+static void fb_gradient(void)
+{
+	/* vertical HSV-ish gradient: red -> green -> blue */
+	for (uint32_t y = 0; y < LCD_H; y++) {
+		uint16_t c;
+		if (y < LCD_H / 3)
+			c = (uint16_t)(0x3F - (y * 0x3F) / (LCD_H / 3));	/* red fades */
+		else if (y < 2 * LCD_H / 3)
+			c = (uint16_t)((0x3F * ((y - LCD_H / 3)) / (LCD_H / 3)) << 5);	/* green rises */
+		else
+			c = (uint16_t)(0x1F * ((y - 2 * LCD_H / 3)) / (LCD_H / 3));	/* blue rises */
+		for (uint32_t x = 0; x < LCD_W; x++)
+			fb[y * LCD_W + x] = c;
+	}
+}
+
+/* P25 = PWM5, high-active backlight through the boost driver:
+ * pwm_test proved PWM drive works (gpio-high does not) */
+#define BL_PWM_CH	5
+#define BL_PWM_HZ	1000
+#define BL_DUTY_PCT	30
+#define PWM_SRC_CLK_HZ	26000000	/* driver default: 26 MHz XTAL */
+
+static void pwm_set_duty_percent(pwm_chan_t ch, uint32_t freq_hz, int percent)
+{
+	pwm_period_duty_config_t cfg = {0};
+
+	cfg.period_cycle = PWM_SRC_CLK_HZ / freq_hz;
+	cfg.duty_cycle   = cfg.period_cycle * percent / 100;
+
+	bk_pwm_set_period_duty(ch, &cfg);
+}
+
+static void lcd_backlight_on(void)
+{
+	pwm_init_config_t cfg = {0};
+
+	bk_pwm_driver_init();
+	cfg.period_cycle = PWM_SRC_CLK_HZ / BL_PWM_HZ;
+	cfg.duty_cycle   = cfg.period_cycle * BL_DUTY_PCT / 100;
+
+	bk_pwm_init(BL_PWM_CH, &cfg);
+	bk_pwm_start(BL_PWM_CH);
+	printf("backlight on (P25=PWM5, %d Hz @ %d%%)\r\n", BL_PWM_HZ, BL_DUTY_PCT);
+}
+
+static void push_both(void)
+{
+	lcd_spi_display_frame(LCD0, (uint8_t *)fb, LCD_W, LCD_H);
+	lcd_spi_display_frame(LCD1, (uint8_t *)fb, LCD_W, LCD_H);
+	
+}
+
+void user_app_main(void)
+{
+	printf("\r\n===== dual_lcd_test on BK7258 =====\r\n");
+
+	lcd_backlight_on();
+
+	/* inits BOTH GC9D01 modules (LCD_SPI_ID0 + LCD_SPI_ID1) */
+	bk_err_t ret = lcd_driver_init(get_lcd_device_by_name("gc9d01"));
+	printf("lcd_driver_init(gc9d01) = %d\r\n", ret);
+
+	while (1) {
+		printf("phase: checkerboard stress\r\n");
+		fb_checkerboard();
+		push_both();
+		rtos_delay_milliseconds(3000);
+
+		printf("phase: solid fills (R/G/B/W)\r\n");
+		fb_fill(0xF800);  push_both();  rtos_delay_milliseconds(1000);
+		fb_fill(0x07E0);  push_both();  rtos_delay_milliseconds(1000);
+		fb_fill(0x001F);  push_both();  rtos_delay_milliseconds(1000);
+		fb_fill(0xFFFF);  push_both();  rtos_delay_milliseconds(1000);
+
+		printf("phase: color bars\r\n");
+		fb_color_bars();
+		push_both();
+		rtos_delay_milliseconds(3000);
+
+		printf("phase: gradient\r\n");
+		fb_gradient();
+		push_both();
+		rtos_delay_milliseconds(3000);
+	}
+}
+
+int main(void)
+{
+#if (CONFIG_SYS_CPU0)
+	rtos_set_user_app_entry((beken_thread_function_t)user_app_main);
+#endif
+	bk_init();
+
+	return 0;
+}
