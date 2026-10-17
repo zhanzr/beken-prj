@@ -42,7 +42,7 @@ static void bench_run(void)
 {
 	printf("compiler: %s\r\n", COMPILER_NAME);
 	printf("flags   : %s\r\n", COMPILER_FLAGS);
-	printf("cpu Hz  : %d\r\n", BENCH_CPU_HZ);
+	printf("cpu Hz  : %d (config)\r\n", BENCH_CPU_HZ);
 
 	dhry_main(BENCH_CPU_HZ);
 }

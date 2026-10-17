@@ -41,9 +41,9 @@ int coremark_main(void);
 
 static void bench_run(void)
 {
-	printf("compiler: %s\r\n", COMPILER_VERSION);
+	printf("compiler: %s\r\n", COMPILER_NAME);
 	printf("flags   : %s\r\n", COMPILER_FLAGS);
-	printf("cpu Hz  : %d\r\n", BENCH_CPU_HZ);
+	printf("cpu Hz  : %d (config)\r\n", BENCH_CPU_HZ);
 
 	coremark_main();
 }
@@ -133,8 +133,9 @@ int main(void)
 
 #elif (CONFIG_SYS_CPU1)
 
-#define MY_CHNL	CP0_MB_CHNL_IPC
-#define NEXT_CHNL	CP2_MB_CHNL_IPC
+/* directed channel values: cp1->cp0 = 0x11, cp1->cp2 = 0x91 */
+#define MY_CHNL	0x11	/* cp1 -> cp0 */
+#define NEXT_CHNL	0x91	/* cp1 -> cp2 */
 
 static volatile unsigned go;
 
@@ -170,8 +171,9 @@ int main(void)
 
 #elif (CONFIG_SYS_CPU2)
 
-#define MY_CHNL	CP1_MB_CHNL_IPC
-#define CP0_CHNL	CP0_MB_CHNL_USB
+/* directed channel values: cp1->cp2 = 0x91 (rx), cp2->cp0 = 0x21 (tx) */
+#define MY_CHNL	0x91	/* cp1 -> cp2 */
+#define CP0_CHNL	0x21	/* cp2 -> cp0 */
 
 static volatile unsigned go;
 
