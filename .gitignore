@@ -11,3 +11,6 @@ __pycache__/
 # dumps / temp
 *.bin.tmp
 flash_dump*
+
+# WiFi credentials (never commit)
+**/wifi_config.h
