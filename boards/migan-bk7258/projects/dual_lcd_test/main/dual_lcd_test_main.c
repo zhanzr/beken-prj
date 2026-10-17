@@ -115,6 +115,16 @@ void user_app_main(void)
 {
 	printf("\r\n===== dual_lcd_test on BK7258 =====\r\n");
 
+	/* P52 = LDO33_EN: powers the LCD modules + backlight rail.
+	 * Without it the panels don't respond (qspi cmd timeouts) and the
+	 * backlight stays dark. Same pattern as beken_genie's LDO3V3 bring-up. */
+	bk_gpio_driver_init();
+	gpio_dev_unmap(GPIO_52);
+	bk_gpio_disable_pull(GPIO_52);
+	bk_gpio_enable_output(GPIO_52);
+	bk_gpio_set_output_high(GPIO_52);
+	printf("LDO33_EN (P52) high\r\n");
+
 	lcd_backlight_on();
 
 	/* inits BOTH GC9D01 modules (LCD_SPI_ID0 + LCD_SPI_ID1) */
