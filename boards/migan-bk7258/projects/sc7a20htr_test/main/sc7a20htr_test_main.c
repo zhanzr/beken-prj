@@ -23,6 +23,7 @@
 #include <driver/gpio.h>
 #include <driver/i2c.h>
 #include <components/bk_gsensor.h>
+#include <driver/pwr_clk.h>
 
 #if (CONFIG_SYS_CPU0)
 
@@ -137,6 +138,18 @@ static void i2c_bus_recover(void)
 	rtos_delay_milliseconds(1);
 
 	printf("i2c: bus recovered (sda now %d)\r\n", bk_gpio_get_input(GPIO_21));
+
+	/* G_VDD detector: R44 pulls INT1 (P48) up to G_VDD. With the
+	 * internal pull-DOWN active, P48 high = G_VDD alive, P48 low =
+	 * G_VDD dead (sensor + its pull-ups unpowered!). */
+	bk_gpio_enable_pull(GPIO_48);
+	bk_gpio_pull_down(GPIO_48);
+	bk_gpio_enable_input(GPIO_48);
+	rtos_delay_milliseconds(2);
+	printf("g_vdd detect: P48 with pull-down = %d -> G_VDD %s\r\n",
+		bk_gpio_get_input(GPIO_48),
+		bk_gpio_get_input(GPIO_48) ? "ALIVE" : "DEAD (R37/rail missing?)");
+	bk_gpio_disable_pull(GPIO_48);
 }
 
 void user_app_main(void)
@@ -148,6 +161,11 @@ void user_app_main(void)
 	printf("\r\n===== sc7a20htr_test on BK7258 (I2C0: SCL=P20 SDA=P21, INT1=P48) =====\r\n");
 
 	bk_gpio_driver_init();
+
+	/* I2C0 lives in the BAKP power domain: hold it on (the vendor
+	 * driver only votes with CONFIG_I2C_PM_CB_SUPPORT) */
+	bk_pm_module_vote_power_ctrl(PM_POWER_SUB_MODULE_NAME_BAKP_I2C0, PM_POWER_MODULE_STATE_ON);
+
 	i2c_bus_recover();
 	i2c_probe();
 
