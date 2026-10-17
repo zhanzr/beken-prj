@@ -1,10 +1,22 @@
-#@ Enable Override Flash Partition
-CONFIG_OVERRIDE_FLASH_PARTITION=y
-#@ Cpu1 core offset address default 0x2e0000
-CONFIG_SYS_CPU1_OFFSET=0x21b0000
+#@ cp0: raw audio record/play + one-panel GUI
 #@ run CPU0 at its max frequency
 CONFIG_CPU_FREQ_HZ=240000000
+#@ Cpu1 core offset address (cp1 image parks here, idle)
+CONFIG_SYS_CPU1_OFFSET=0x21b0000
+#@ raw audio capture/playback (on-chip codec + GDMA rings)
 CONFIG_AUDIO=y
 CONFIG_AUDIO_ADC=y
 CONFIG_AUDIO_DAC=y
 CONFIG_GENERAL_DMA=y
+#@ panel backlight (P25 = PWM5)
+CONFIG_PWM=y
+#@ PSRAM: the 320 KB record buffer (psram_malloc)
+CONFIG_PSRAM=y
+CONFIG_PSRAM_AS_SYS_MEMORY=y
+CONFIG_PSRAM_WRITE_THROUGH=y
+CONFIG_PSRAM_HEAP_BASE=0x60B00000
+CONFIG_PSRAM_HEAP_SIZE=0x200000
+CONFIG_PSRAM_HEAP_CPU0_BASE_ADDER=0x60B00000
+#@ QSPI units for the fast LCD frame push (3-wire pad map, keeps GPIO_25)
+CONFIG_QSPI=y
+CONFIG_QSPI_LINE_MODE=1
