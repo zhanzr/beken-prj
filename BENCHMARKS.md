@@ -49,3 +49,29 @@ Cores run one-by-one; all numbers from UART capture, flash readback-verified.
   (see the vendor-tree diff) so no cp1 boot vote is needed.
 - `CONFIG_PM_SUPER_DEEP_SLEEP` (default on) darkens an idle board; RST
   revives it.
+
+## dual_lcd_test findings (2026-10-17, evening)
+
+The dual-LCD driving architecture, fully traced:
+
+- The two GC9D01 160x160 panels sit on the two QSPI-backed SPI interfaces:
+  LCD_SPI_ID0 (QSPI0: SCLK=P22, CS=P23, MOSI=P24, DC=P7, RST=P6) and
+  LCD_SPI_ID1 (QSPI1: SCLK=P2, CS=P3, MOSI=P4, DC=P5, RST=P45) - the
+  driver's pin defaults match the migan schematic exactly.
+- beken_genie compiles the GC9D01 driver into the **cp1** firmware only
+  (CONFIG_LCD_SPI_GC9D01=1 in the cp1 sdkconfig; the cp0 build does not
+  have it). cp0 opens the panels via media_app_lvgl_open(&lcd_open)
+  which votes cp1 boot and forwards the open to cp1's media service.
+- dual_lcd_test currently runs the same driver on **cp0** (the cp0 build
+  now registers the GC9D01 via the project Kconfig.projbuild). The
+  backlight works (LDO33 rail P52 + P25=PWM5 @ 30%), but the panel
+  SPI-over-QSPI writes stall (qspi_ll_wait_cmd_done timeout,
+  lcd_spi_send_cmd ret=-0x2007) - the QSPI unit's cmd_start_done never
+  completes, consistent with a missing QSPI clock/pad setup that
+  beken_genie's cp1-side flow provides.
+
+Next steps: either port the remaining cp1-side display init
+(bk_peripheral_init + the QSPI clock/pad config) into the cp0-driven
+test, or move the pattern push into dual_lcd_test's cp1 firmware
+(the cp1 build already has the full GC9D01 driver). The vendor LCD
+guide: docs.bekencorp.com bk_avdk bk7258 display/lcd_user_guide.

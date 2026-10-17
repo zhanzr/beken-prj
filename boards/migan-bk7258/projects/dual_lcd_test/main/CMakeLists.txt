@@ -9,4 +9,4 @@ if (CONFIG_OVERRIDE_FLASH_PARTITION)
         )
 endif()
 
-armino_component_register(SRCS "${srcs}" INCLUDE_DIRS "${incs}")
+armino_component_register(SRCS "${srcs}" INCLUDE_DIRS "${incs}" PRIV_REQUIRES driver)

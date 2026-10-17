@@ -19,6 +19,10 @@ VENDOR_DIR  := vendor/bk_aidk
 BOARD_DIR   := boards/$(BOARD)
 PATCH_STAMP := build/.vendor-patched
 
+# the AVDK components dir - needed by the Kconfig/cmake env for the
+# avdk-side symbols (GC9D01, media, etc.) in the per-core configs
+export ARMINO_AVDK_DIR := $(abspath $(VENDOR_DIR)/bk_avdk)
+
 # NOTE: PROJECT_DIR/BUILD_DIR must stay RELATIVE to vendor/bk_aidk/bk_avdk/bk_idk
 # (the vendor build system string-concatenates them with its own root).
 REL_ROOT := ../../../../

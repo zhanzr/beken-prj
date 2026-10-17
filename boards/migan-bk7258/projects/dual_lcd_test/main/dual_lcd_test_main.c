@@ -23,10 +23,10 @@
 #include <driver/pwm.h>
 #include <driver/pwr_clk.h>
 #include <modules/pm.h>
+#include <driver/lcd.h>
+#include <driver/lcd_spi.h>
 
 #if (CONFIG_SYS_CPU0)
-
-/* ---- cp0: power rails + backlight + cp1 boot ---- */
 
 #define BL_PWM_CH	5		/* P25 = PWM5 */
 #define BL_PWM_HZ	1000
@@ -135,10 +135,12 @@ static void push_both(void)
 
 void user_app_main(void)
 {
+	bk_err_t ret;
+
 	printf("\r\n===== dual_lcd_test patterns on cp1 =====\r\n");
 
 	/* inits BOTH GC9D01 modules (LCD_SPI_ID0 + LCD_SPI_ID1) */
-	bk_err_t ret = lcd_driver_init(get_lcd_device_by_name("gc9d01"));
+	ret = lcd_driver_init(get_lcd_device_by_name("gc9d01"));
 	printf("lcd_driver_init(gc9d01) = %d\r\n", ret);
 
 	while (1) {
