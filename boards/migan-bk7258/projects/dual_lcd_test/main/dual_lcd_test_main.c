@@ -1,20 +1,18 @@
 /*
- * dual_lcd_test - drive the two GC9D01 SPI LCD modules via BIT-BANG GPIO
- *
- * Independent of the QSPI hardware, the LCD driver stack and cp1.
- * The SPI bit-bang writes the AON GPIO cfg registers directly
- * (gpio_ll_set_output_value) - roughly 20-30x faster than going
- * through the SDK gpio calls.
- *
- * Shows: banner page (5x7 font), test patterns, info page.
+ * dual_lcd_test - drive the two GC9D01 SPI LCD modules, alternating the
+ * driving method each pass: 'SW' (GPIO bit-bang) => 'HW' (QSPI units,
+ * 480M/7) => 'SW' => 'HW' ...
  *
  * Panels (migan schematic):
- *   LCD1: SCLK=P2  CS=P3  MOSI=P4  DC=P5  RST=P45   (QSPI1 pins)
- *   LCD2: SCLK=P22 CS=P23 MOSI=P24 DC=P7  RST=P6    (QSPI0 pins)
- * Patterns are pushed to both panels in lockstep (mirrored); the
- * banner/info pages carry the panel id (LCD1 / LCD2) per module.
+ *   LCD1: SCLK=P2  CS=P3  MOSI=P4  DC=P5  RST=P45   (QSPI1 unit)
+ *   LCD2: SCLK=P22 CS=P23 MOSI=P24 DC=P7  RST=P6    (QSPI0 unit)
+ * D/CX is a plain GPIO in both methods (the vendor does the same);
+ * the pad mux switches between GPIO mode (SW) and the QSPI function
+ * (HW) via the cfg-word second-function bit. HW needs CONFIG_QSPI=y +
+ * CONFIG_QSPI_LINE_MODE=1 (3-wire pad map; keeps GPIO_25 = backlight).
+ *
  * The panels are ROUND (1.28" 160x160) - pages are laid out for a
- * circular active area (ring + centered text).
+ * circular active area (ring + centered text, no corner content).
  *
  * The GC9D01 init sequence is from the vendor driver
  * (bk_peripheral/src/lcd/spi/lcd_spi_gc9d01.c, gc9d01_init_cmds).
@@ -30,7 +28,11 @@
 #include <os/os.h>
 #include <driver/gpio.h>
 #include <driver/pwm.h>
+#include <driver/qspi.h>
+#include <driver/qspi_types.h>
 #include "gpio_ll.h"
+#include "qspi_hal.h"
+#include "qspi_ll.h"
 
 /* ---- panel pins (migan schematic) ---- */
 /* LCD1 */
@@ -51,6 +53,11 @@
 #define BL_PWM_HZ	1000
 #define BL_DUTY_PCT	30
 #define PWM_SRC_CLK_HZ	26000000
+
+/* ---- framebuffer: 160x160 RGB565 ---- */
+#define LCD_W	160
+#define LCD_H	160
+static uint16_t fb[LCD_W * LCD_H];
 
 /* ---- gpio helpers ---- */
 static gpio_hw_t *const ghw = (gpio_hw_t *)GPIO_LL_REG_BASE;
@@ -80,6 +87,131 @@ static void fp_init(fpin_t *p, gpio_id_t g)
 
 #define P_LO(p)	(*p.reg = p.lo)
 #define P_HI(p)	(*p.reg = p.hi)
+
+/* ---- HW mode: drive the panels through the QSPI units ----
+ * 3-wire (CLK/CSN/IO0) at ~60 MHz (480M PLL / 7), D/CX stays a plain
+ * GPIO in both methods. CONFIG_QSPI=y + CONFIG_QSPI_LINE_MODE=1 make
+ * bk_qspi_init() map only CSN/CLK/IO0 (IO1 = GPIO_25 stays backlight).
+ * Pad switch SW<->HW = cfg word with the second-function bit (6). */
+#define CFG_2ND_FUNC	BIT(6)
+
+static qspi_hal_t hw_hal[2];
+static bool hw_ok = false;
+static uint32_t hw_err;
+static uint32_t hw_w_sck1, hw_w_sck2, hw_w_mosi1, hw_w_mosi2, hw_w_cs1, hw_w_cs2;
+
+static int hw_wait(int unit)
+{
+	qspi_hw_t *hw = hw_hal[unit].hw;
+
+	for (uint32_t i = 0; i < 20000; i++) {
+		if (qspi_ll_is_cmd_start_done(hw))
+			return 0;
+	}
+	hw->status_clr.clr_cmd_start_done = 1;
+	hw->status_clr.clr_cmd_start_done = 0;
+	return -1;
+}
+
+/* send 1..4 bytes: byte0 of `value` goes on the wire first */
+static int hw_send(int unit, uint32_t value, uint32_t nbytes)
+{
+	qspi_hal_t *h = &hw_hal[unit];
+
+	qspi_hal_set_cmd_c_l(h, 0);
+	qspi_hal_set_cmd_c_h(h, value);
+	qspi_hal_set_cmd_c_cfg1(h, 0x3 << (nbytes * 2));
+	qspi_hal_set_cmd_c_cfg2(h, 0);
+	qspi_hal_cmd_c_start(h);
+	if (hw_wait(unit) != 0) {
+		hw_err++;
+		if (hw_err == 32)
+			printf("HW: unit %d timed out, falling back to SW\r\n", unit);
+		return -1;
+	}
+	return 0;
+}
+
+static void hw_dc_lo(void)	{ *fp_dc1.reg = fp_dc1.lo; *fp_dc2.reg = fp_dc2.lo; }
+static void hw_dc_hi(void)	{ *fp_dc1.reg = fp_dc1.hi; *fp_dc2.reg = fp_dc2.hi; }
+
+static void hw_push_unit(int unit)
+{
+	hw_dc_lo();
+	hw_send(unit, 0x2A, 1);				/* CASET */
+	hw_dc_hi();
+	hw_send(unit, (uint32_t)(LCD_W - 1) << 24, 4);
+	hw_dc_lo();
+	hw_send(unit, 0x2B, 1);				/* RASET */
+	hw_dc_hi();
+	hw_send(unit, (uint32_t)(LCD_H - 1) << 24, 4);
+	hw_dc_lo();
+	hw_send(unit, 0x2C, 1);				/* RAMWR */
+	hw_dc_hi();
+
+	/* pixel stream, 2 pixels (4 bytes) per op */
+	for (uint32_t i = 0; i < LCD_W * LCD_H; i += 2) {
+		uint32_t v = (uint32_t)(fb[i] >> 8)
+			   | ((uint32_t)(fb[i] & 0xFF) << 8)
+			   | ((uint32_t)(fb[i + 1] >> 8) << 16)
+			   | ((uint32_t)(fb[i + 1] & 0xFF) << 24);
+		if (hw_send(unit, v, 4) != 0 && hw_err >= 32)
+			return;
+	}
+}
+
+static void pads_to_hw(void)
+{
+	*fp_sck1.reg = hw_w_sck1;	*fp_sck2.reg = hw_w_sck2;
+	*fp_mosi1.reg = hw_w_mosi1;	*fp_mosi2.reg = hw_w_mosi2;
+	*fp_cs1.reg = hw_w_cs1;		*fp_cs2.reg = hw_w_cs2;
+}
+
+static void pads_to_sw(void)
+{
+	*fp_sck1.reg = fp_sck1.hi;	*fp_sck2.reg = fp_sck2.hi;
+	*fp_mosi1.reg = fp_mosi1.hi;	*fp_mosi2.reg = fp_mosi2.hi;
+	*fp_cs1.reg = fp_cs1.hi;	*fp_cs2.reg = fp_cs2.hi;
+}
+
+static void hw_init(void)
+{
+	qspi_config_t cfg = {0};
+
+	bk_qspi_driver_init();
+	cfg.src_clk = QSPI_SCLK_480M;
+	cfg.src_clk_div = 7;			/* the vendor LCD_QSPI_60M mode */
+
+	for (int u = 0; u < 2; u++) {
+		hw_hal[u].id = (qspi_id_t)u;
+		qspi_hal_init(&hw_hal[u]);
+		bk_qspi_init((qspi_id_t)u, &cfg);
+	}
+
+	/* hw cfg words = idle levels with the pads handed to the QSPI unit */
+	hw_w_sck1  = fp_sck1.hi  | CFG_2ND_FUNC;
+	hw_w_sck2  = fp_sck2.hi  | CFG_2ND_FUNC;
+	hw_w_mosi1 = fp_mosi1.hi | CFG_2ND_FUNC;
+	hw_w_mosi2 = fp_mosi2.hi | CFG_2ND_FUNC;
+	hw_w_cs1   = fp_cs1.hi   | CFG_2ND_FUNC;
+	hw_w_cs2   = fp_cs2.hi   | CFG_2ND_FUNC;
+
+	/* probe both units with one command each */
+	hw_err = 0;
+	pads_to_hw();
+	for (int u = 0; u < 2; u++) {
+		*fp_dc1.reg = fp_dc1.lo; *fp_dc2.reg = fp_dc2.lo;
+		if (hw_send(u, 0x00, 1) != 0)
+			hw_ok = false;
+	}
+	pads_to_sw();
+	if (hw_err == 0) {
+		hw_ok = true;
+		printf("HW mode ready (2x QSPI, 480M/7)\r\n");
+	} else {
+		printf("HW probe failed (%u errs), SW only\r\n", hw_err);
+	}
+}
 
 static void gpio_out(gpio_id_t g)
 {
@@ -187,11 +319,7 @@ static void lcd_init_panels(void)
 	}
 }
 
-/* ---- framebuffer: 160x160 RGB565 ---- */
-#define LCD_W	160
-#define LCD_H	160
-static uint16_t fb[LCD_W * LCD_H];
-
+/* ---- pattern draw helpers ---- */
 static void fb_fill(uint16_t c)
 {
 	for (uint32_t i = 0; i < LCD_W * LCD_H; i++)
@@ -342,33 +470,33 @@ static void fb_circle(uint16_t c)
 	}
 }
 
-static void fb_banner(const char *label)
+static void fb_banner(const char *method, const char *label)
 {
 	fb_fill(0x0000);
 	fb_circle(0x07FF);
-	fb_draw_str_c(46, "BK7258", 0xF800, 3);
-	fb_draw_str_c(78, "SW", 0xFFE0, 2);		/* software bit-bang */
-	fb_draw_str_c(102, label, 0x07E0, 2);
+	fb_draw_str_c(44, method, 0xF800, 5);		/* SW / HW, big */
+	fb_draw_str_c(96, label, 0x07E0, 2);		/* LCD1 / LCD2 */
 }
 
-static void fb_info(const char *label, uint32_t pass)
+static void fb_info(const char *method, const char *label, uint32_t pass)
 {
 	char line[16];
 
 	fb_fill(0x0000);
-	fb_draw_str_c(30, "BK7258", 0x07FF, 2);
-	fb_draw_str_c(52, label, 0xFFE0, 2);
-	fb_draw_str_c(80, "GC9D01 SW", 0xFFFF, 1);
+	fb_circle(0x001F);
+	snprintf(line, sizeof(line), "%s %s", method, label);
+	fb_draw_str_c(44, "GC9D01", 0x07FF, 2);
+	fb_draw_str_c(68, line, 0xFFE0, 2);
 	snprintf(line, sizeof(line), "PASS %u", pass);
-	fb_draw_str_c(92, line, 0xFFFF, 1);
-	fb_draw_str_c(104, "BL PWM5", 0x07E0, 1);
+	fb_draw_str_c(96, line, 0xFFFF, 1);
+	fb_draw_str_c(108, "BL PWM5", 0x07E0, 1);
 	/* RGBW chips centered */
 	for (uint32_t i = 0; i < 10; i++) {
 		for (uint32_t j = 0; j < 8; j++) {
-			fb_px(56 + i, 122 + j, 0xF800);
-			fb_px(70 + i, 122 + j, 0x07E0);
-			fb_px(84 + i, 122 + j, 0x001F);
-			fb_px(98 + i, 122 + j, 0xFFFF);
+			fb_px(56 + i, 126 + j, 0xF800);
+			fb_px(70 + i, 126 + j, 0x07E0);
+			fb_px(84 + i, 126 + j, 0x001F);
+			fb_px(98 + i, 126 + j, 0xFFFF);
 		}
 	}
 }
@@ -422,6 +550,36 @@ static void lcd_backlight_on(void)
 	printf("backlight on (P25=PWM5, %d Hz @ %d%%)\r\n", BL_PWM_HZ, BL_DUTY_PCT);
 }
 
+/* push fb to one panel (id 1 or 2) by method; self-heals pads and
+ * falls back to SW if the HW units broke */
+static void push_page(uint8_t id, bool hw)
+{
+	if (hw && hw_ok) {
+		pads_to_hw();
+		hw_push_unit(id == 2 ? 0 : 1);	/* LCD2=QSPI0, LCD1=QSPI1 */
+	} else {
+		pads_to_sw();
+		push_frame_to(id);
+	}
+	if (hw_err >= 32)
+		hw_ok = false;
+}
+
+/* push fb to both panels (mirrored) by method */
+static void push_both(bool hw)
+{
+	if (hw && hw_ok) {
+		pads_to_hw();
+		hw_push_unit(0);
+		hw_push_unit(1);
+	} else {
+		pads_to_sw();
+		push_frame();
+	}
+	if (hw_err >= 32)
+		hw_ok = false;
+}
+
 void user_app_main(void)
 {
 #if (CONFIG_SYS_CPU0)
@@ -453,43 +611,50 @@ void user_app_main(void)
 	lcd_init_panels();
 	printf("panels initialized\r\n");
 
+	hw_init();
+
 	uint32_t pass = 0;
+	bool use_hw = false;
 	while (1) {
-		printf("phase: banner\r\n");
-		fb_banner("LCD1");
-		push_frame_to(1);
-		fb_banner("LCD2");
-		push_frame_to(2);
-		rtos_delay_milliseconds(3000);
+		const char *m = (use_hw && hw_ok) ? "HW" : "SW";
 
-		printf("phase: checkerboard stress\r\n");
+		printf("phase: banner (%s)\r\n", m);
+		fb_banner(m, "LCD1");
+		push_page(1, use_hw);
+		fb_banner(m, "LCD2");
+		push_page(2, use_hw);
+		rtos_delay_milliseconds(2000);
+
+		printf("phase: checkerboard (%s)\r\n", m);
 		fb_checkerboard();
-		push_frame();
-		rtos_delay_milliseconds(1500);
+		push_both(use_hw);
+		rtos_delay_milliseconds(1000);
 
-		printf("phase: info page\r\n");
+		printf("phase: info page (%s)\r\n", m);
 		pass++;
-		fb_info("LCD1", pass);
-		push_frame_to(1);
-		fb_info("LCD2", pass);
-		push_frame_to(2);
-		rtos_delay_milliseconds(3000);
+		fb_info(m, "LCD1", pass);
+		push_page(1, use_hw);
+		fb_info(m, "LCD2", pass);
+		push_page(2, use_hw);
+		rtos_delay_milliseconds(2000);
 
-		printf("phase: solid fills (R/G/B/W)\r\n");
-		fb_fill(0xF800);  push_frame();  rtos_delay_milliseconds(600);
-		fb_fill(0x07E0);  push_frame();  rtos_delay_milliseconds(600);
-		fb_fill(0x001F);  push_frame();  rtos_delay_milliseconds(600);
-		fb_fill(0xFFFF);  push_frame();  rtos_delay_milliseconds(600);
+		printf("phase: solid fills (%s)\r\n", m);
+		fb_fill(0xF800);  push_both(use_hw);  rtos_delay_milliseconds(500);
+		fb_fill(0x07E0);  push_both(use_hw);  rtos_delay_milliseconds(500);
+		fb_fill(0x001F);  push_both(use_hw);  rtos_delay_milliseconds(500);
+		fb_fill(0xFFFF);  push_both(use_hw);  rtos_delay_milliseconds(500);
 
-		printf("phase: color bars\r\n");
+		printf("phase: color bars (%s)\r\n", m);
 		fb_color_bars();
-		push_frame();
-		rtos_delay_milliseconds(1500);
+		push_both(use_hw);
+		rtos_delay_milliseconds(1000);
 
-		printf("phase: gradient\r\n");
+		printf("phase: gradient (%s)\r\n", m);
 		fb_gradient();
-		push_frame();
-		rtos_delay_milliseconds(1500);
+		push_both(use_hw);
+		rtos_delay_milliseconds(1000);
+
+		use_hw = !use_hw;
 	}
 #else
 	/* only cp0 drives the panels in this test */

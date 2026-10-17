@@ -1,8 +1,9 @@
 # dual_lcd_test
 
-Drives the two GC9D01 SPI LCD modules of the migan-bk7258 board **from cp0
-via GPIO bit-bang** - independent of the QSPI hardware, the vendor LCD
-driver stack and cp1.
+Drives the two GC9D01 SPI LCD modules of the migan-bk7258 board from cp0,
+**alternating the driving method each pass: SW (GPIO bit-bang) => HW
+(QSPI hardware) => SW => HW ...**. The banner/info pages show the current
+method (big "SW"/"HW") and the panel id ("LCD1"/"LCD2" on its own module).
 
 Panels: 2x Galaxy Core **GC9D01**, 1.28" **round**, 160x160, RGB565 over
 3-wire-style SPI (D/CX bit + 8 bit command / 16 bit pixels, SPI mode 0).
@@ -30,16 +31,28 @@ Notes:
 ## Software approach
 
 - cp0-only (`CONFIG_SYS_CPU0` guard; cp1/cp2 idle).
-- Bit-bang SPI writing the AON GPIO cfg registers directly
-  (`gpio_ll_set_output_value`, then precomputed full-cfg-word single
-  stores). Both panels are clocked in lockstep.
-- Speed: ~1.2 s per full frame push (409,600 bits ≈ 350 kbit/s; the AON
-  register bus caps at ~475 ns per access). Fine for text/patterns.
+- **SW method**: bit-bang SPI writing the AON GPIO cfg registers
+  directly (precomputed full-cfg-word single stores). ~1.0 s per
+  full-frame push (~350 kbit/s; the AON register bus caps at ~475 ns
+  per access). Both panels clocked in lockstep.
+- **HW method**: the two QSPI units in 3-wire mode (CLK/CSN/IO0 only,
+  480 MHz PLL / 7 ~= 60 MHz, the vendor LCD_QSPI_60M setting). Frames
+  go as 4-byte `cmd_c` ops (the vendor "direct mode" byte packing:
+  byte0 of the word hits the wire first). ~25 ms per frame per panel
+  (~40x faster than SW). D/CX stays a plain GPIO - the same trick the
+  vendor driver uses.
+- Method switch = per-pad cfg word with/without the second-function
+  bit; the QSPI dev-map (set by `bk_qspi_init`) persists.
+- HW needs `CONFIG_QSPI=y` and `CONFIG_QSPI_LINE_MODE=1` in the cp0
+  config (`config/bk7258/config`): without the former the QSPI driver
+  framework never inits and every transfer times out; line mode 1 maps
+  only CSN/CLK/IO0 so GPIO_25 (QSPI0 IO1) stays with PWM5 backlight.
+- Bounded waits: a dead QSPI unit falls back to SW automatically
+  (32 timeouts disable HW mode).
 - GC9D01 init sequence taken verbatim from the vendor driver
-  (`bk_peripheral/src/lcd/spi/lcd_spi_gc9d01.c`).
+  (`bk_peripheral/src/lcd/spi/lcd_spi_gc9d01.c`), sent once via SW.
 - Pages are laid out for the circular active area: ring border +
-  centered text only. Banner shows `BK7258 / SW / LCD1|LCD2` (SW =
-  software bit-bang); the info page adds pass counter and RGBW chips.
+  centered text only.
 - Test patterns (both panels mirrored): checkerboard, R/G/B/W fills,
   color bars, gradient.
 
@@ -86,8 +99,7 @@ this project did not. The vendor LCD driver swallows the resulting error
 (`bk_pm_module_vote_power_ctrl(PM_POWER_SUB_MODULE_NAME_AHBP_QSPI[1],
 PM_POWER_MODULE_STATE_ON)`), which runs only after the guard passes.
 
-To make the hardware path work: enable `CONFIG_QSPI=y` (or call
-`bk_qspi_driver_init()` before `lcd_spi_init()`), then the vendor
-`lcd_spi_display_frame()` flow should drive both panels at
-LCD_QSPI_60M (480 MHz PLL / 7). The bit-bang driver in this project
-stays as the cp0-only fallback.
+This project implements exactly that (see "Software approach"): the HW
+method drives both panels through the QSPI units at ~25 ms/frame; the
+SW bit-bang stays as fallback and is what sends the one-time GC9D01
+init sequence.
