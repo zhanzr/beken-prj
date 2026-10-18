@@ -107,8 +107,10 @@ void user_app_main(void)
 
 	s_i2chw.i2c0_hw = (i2c_typedef_t *)SOC_I2C0_REG_BASE;
 	s_i2chw.i2c1_hw = (i2c_typedef_t *)SOC_I2C1_REG_BASE;
-	i2c_ll_disable_scl_timeout(&s_i2chw, I2C_ID_0);
-	printf("i2c0 ready, scl timeout disarmed\r\n");
+	/* a LARGE threshold instead of disabling: tolerate the sensor's
+	 * clock stretching but keep the watchdog alive */
+	i2c_ll_set_scl_timeout_threshold(&s_i2chw, I2C_ID_0, 0xFFFF);
+	printf("i2c0 ready, scl timeout threshold raised to max\r\n");
 
 	/* soft reset FIRST (clears any latch left by earlier broken
 	 * sessions), then the who_am_i check */
