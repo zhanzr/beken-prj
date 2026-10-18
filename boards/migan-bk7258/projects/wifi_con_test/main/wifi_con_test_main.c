@@ -166,14 +166,15 @@ static int connect_sta(void)
 		return -1;
 	}
 
-	if (rtos_get_semaphore(&s_conn_sem, CONNECT_TIMEOUT_MS) == kNoErr) {
-		if (s_got_ip) {
-			printf("--- connected successfully ---\r\n");
-			print_ip();
-			ret = 0;
-		} else {
-			printf("--- connection FAILED ---\r\n");
-		}
+	/* wait for got-ip; ignore intermediate disconnect events
+	 * (the stack emits one while (re)associating) */
+	for (int i = 0; i < CONNECT_TIMEOUT_MS / 1000 && !s_got_ip; i++)
+		rtos_get_semaphore(&s_conn_sem, 1000);
+
+	if (s_got_ip) {
+		printf("--- connected successfully ---\r\n");
+		print_ip();
+		ret = 0;
 	} else {
 		printf("--- connection TIMEOUT ---\r\n");
 	}
