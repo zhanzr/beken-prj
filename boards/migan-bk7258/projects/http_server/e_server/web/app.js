@@ -107,7 +107,8 @@ async function setLed(i, on) {
 const MAX_SAMPLES = 60;
 
 const plots = {
-  temp: { canvasId: 'plot-temp', label: '°C', min: 0, max: 100, dec: 1, buf: [] }
+  temp: { canvasId: 'plot-temp', label: '°C', min: 0, max: 100, dec: 1, buf: [] },
+  vbat: { canvasId: 'plot-vbat', label: 'V',  min: 3.0, max: 4.5, dec: 2, buf: [] }
 };
 
 let adcTimer = null;
@@ -176,6 +177,7 @@ async function sampleAdc(gen) {
   const vbat = (v.vbat_v !== undefined) ? v.vbat_v
              : (v.vbat_mv !== undefined) ? v.vbat_mv / 1000 : undefined;
   pushSample('temp', v.temp_c);
+  pushSample('vbat', vbat);
   redrawAll();
 }
 

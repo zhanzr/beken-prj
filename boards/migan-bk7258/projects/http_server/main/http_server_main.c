@@ -53,6 +53,7 @@
 
 #define CAM_SCL		GPIO_42
 #define CAM_SDA		GPIO_43
+#define CAM_PWR		GPIO_49		/* DVP_PWR_CTRL: camera LDO enable */
 
 #define HTTP_PORT	80
 #define REQ_MAX		2048
@@ -126,6 +127,11 @@ static int cam_probe_addr(uint8_t addr)
 
 static void camera_probe(void)
 {
+	/* power the camera first: P49 = DVP_PWR_CTRL enables the camera
+	 * LDOs (2.8 V / 1.8 V, schematic sheet 3) */
+	gpio_out_init(CAM_PWR, 1);
+	rtos_delay_milliseconds(50);
+
 	gpio_dev_unmap(CAM_SCL);
 	gpio_dev_unmap(CAM_SDA);
 	bk_gpio_disable_pull(CAM_SCL);
@@ -133,8 +139,17 @@ static void camera_probe(void)
 	bk_gpio_enable_output(CAM_SCL);
 	bk_gpio_enable_output(CAM_SDA);
 
-	s_cam_ready = cam_probe_addr(0x3C) || cam_probe_addr(0x3D);
-	printf("camera: GC2145 %s (I2C1 P42/P43 probe 0x3C/0x3D)\r\n",
+	/* GC2145 SCCB address variants across module revisions */
+	static const uint8_t addrs[] = { 0x3C, 0x3D, 0x21, 0x20, 0x6C, 0x6E };
+
+	for (unsigned i = 0; i < sizeof(addrs); i++) {
+		if (cam_probe_addr(addrs[i])) {
+			s_cam_ready = 1;
+			printf("camera: ACK at 0x%02x\r\n", addrs[i]);
+			break;
+		}
+	}
+	printf("camera: GC2145 %s (I2C1 P42/P43, powered via P49)\r\n",
 		s_cam_ready ? "detected" : "not detected");
 }
 
