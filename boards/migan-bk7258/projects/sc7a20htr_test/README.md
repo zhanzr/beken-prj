@@ -3,11 +3,11 @@
 Exercises the board's **SC7A20HTR** 3-axis MEMS accelerometer (g-sensor,
 Silicon Labs-compatible / LIS2DH12 register layout, Silan).
 
-> **STATUS: the sensor does not respond reliably on this board.** The vendor
-> driver, the vendor CLI, my hardware-I2C path and a raw GPIO bit-bang all
-> fail to read the chip reliably (details and evidence below). The software
-> stack is complete and correct; the remaining suspicion is the sensor's
-> hardware/strapping. No bench instruments were available to confirm.
+> **STATUS: not yet working.** The vendor driver, the vendor CLI, the
+> hardware-I2C path and a raw GPIO bit-bang all fail to read the chip
+> in the current builds (the chip answered correctly exactly once).
+> The software stack is complete; the bring-up investigation is
+> documented below and continues.
 
 ## Hardware (migan schematic, sheet 4)
 
@@ -103,10 +103,16 @@ or strapping:
   grounded.
 - VDD pin 7 / VDDIO pin 3: expect ~3.3 V.
 
-If those are correct, the sensor module itself (LGA solder joints or a
-counterfeit part) is the remaining suspect. The ESP32 reference project
-`example-mydazy__esp_sc7a20h-v2.0.0-basic_motion_wakeup` can discriminate:
-wire the sensor to an ESP32 and run it.
+- **SDO (pin 1)**: 0 V = address 0x18 (matches). Datasheet also warns the
+  internal SDO pull-up must be disabled (0x57 SDO_PU) when SDO is
+  grounded.
+- VDD pin 7 / VDDIO pin 3: expect ~3.3 V.
+
+If the straps measure correctly, the next step is comparing against a
+known-good environment: the ESP32 reference project
+`example-mydazy__esp_sc7a20h-v2.0.0-basic_motion_wakeup` runs the same
+sensor with the mydazy driver and can discriminate between a board-side
+configuration gap and a device-level issue.
 
 ## Build / flash
 
