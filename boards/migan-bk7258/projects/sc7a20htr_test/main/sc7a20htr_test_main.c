@@ -123,10 +123,9 @@ void user_app_main(void)
 	int bh_stream(void);
 
 	if (ret != 0 || who != 0x11) {
-		printf("gsensor: hw i2c reads wrong - falling back to bit-bang\r\n");
-		if (bh_stream() == 0)
-			return;		/* bit-bang loop runs forever */
-		printf("gsensor: still dead - LED1 fast blink\r\n");
+		printf("gsensor: hw i2c reads wrong.\r\n");
+		printf("gsensor: vendor CLI is enabled - type 'gsensor open' (or\r\n");
+		printf("gsensor: 'gsensor init' then 'gsensor open') on this console.\r\n");
 		while (1) {
 			bk_gpio_set_output_high(LED_MOTION);
 			rtos_delay_milliseconds(100);
