@@ -14,3 +14,6 @@ flash_dump*
 
 # WiFi credentials (never commit)
 **/wifi_config.h
+
+# wifi credentials
+boards/migan-bk7258/projects/wifi_con_test/main/wifi_config.h
