@@ -36,6 +36,7 @@
 #include <components/event.h>
 #include <components/netif.h>
 #include <bk_private/bk_wifi.h>
+#include <driver/dvp_camera.h>
 #include "lwip/sockets.h"
 #include <temp_detect_pub.h>
 
@@ -51,22 +52,17 @@
 #define LED1_GPIO	GPIO_40
 #define LED2_GPIO	GPIO_41
 
-#define CAM_SCL		GPIO_42
-#define CAM_SDA		GPIO_43
-#define CAM_PWR		GPIO_49		/* DVP_PWR_CTRL: camera LDO enable */
-
 #define HTTP_PORT	80
 #define REQ_MAX		2048
-
-extern void delay_us(UINT32 us);
 
 static int s_led[2];
 static char s_lan_ip[16];
 static volatile int s_got_ip;
 static int s_cam_ready;
+static char s_cam_name[24];
 static beken_semaphore_t s_conn_sem;
 
-/* ==================== GPIO / I2C bit-bang (camera probe) ============ */
+/* ==================== GPIO ==================== */
 static void gpio_out_init(gpio_id_t g, int level)
 {
 	gpio_dev_unmap(g);
@@ -78,10 +74,25 @@ static void gpio_out_init(gpio_id_t g, int level)
 		bk_gpio_set_output_low(g);
 }
 
+/* ==================== camera: vendor dvp framework ====================
+ * The camera SCCB bus is P42/P43 = the I2C1 pads (CONFIG_DVP_CAMERA_I2C_ID=1).
+ * bk_dvp_camera_enumerate() does the bring-up exactly as the vendor
+ * examples do:
+ *   1. bk_video_power_on(CONFIG_CAMERA_CTRL_POWER_GPIO_ID = 49)
+ *   2. bk_video_gpio_init(DVP_GPIO_ALL)  - data/sync/MCLK pads
+ *   3. bk_video_dvp_mclk_enable()        - the sensor needs MCLK!
+ *   4. bk_i2c_init(1, 100 kHz) + auto-detect (GC2145 chip id 0x2145)
+ * The P42/P43 pads are mapped to I2C1 here (the driver only maps the
+ * unit's default pads). */
+extern void delay_us(UINT32 us);
+
+static gpio_id_t bh_scl_pin = GPIO_42;
+static gpio_id_t bh_sda_pin = GPIO_43;
+
 static void bh_delay(void)		{ delay_us(5); }
-static void bh_scl(int v)		{ if (v) bk_gpio_set_output_high(CAM_SCL); else bk_gpio_set_output_low(CAM_SCL); }
-static void bh_sda(int v)		{ if (v) bk_gpio_set_output_high(CAM_SDA); else bk_gpio_set_output_low(CAM_SDA); }
-static int  bh_sda_get(void)		{ return bk_gpio_get_input(CAM_SDA); }
+static void bh_scl(int v)		{ if (v) bk_gpio_set_output_high(bh_scl_pin); else bk_gpio_set_output_low(bh_scl_pin); }
+static void bh_sda(int v)		{ if (v) bk_gpio_set_output_high(bh_sda_pin); else bk_gpio_set_output_low(bh_sda_pin); }
+static int  bh_sda_get(void)		{ return bk_gpio_get_input(bh_sda_pin); }
 
 static void bh_start(void)
 {
@@ -115,42 +126,99 @@ static int bh_write_byte(uint8_t b)
 	return ack;
 }
 
-static int cam_probe_addr(uint8_t addr)
+static uint8_t bh_read_byte(int ack)
 {
-	int ack;
+	uint8_t v = 0;
 
-	bh_start();
-	ack = bh_write_byte(addr << 1);
-	bh_stop();
-	return ack == 0;
+	bh_sda(1);
+	for (int i = 0; i < 8; i++) {
+		bh_delay();
+		bh_scl(1); bh_delay();
+		v = (v << 1) | (bh_sda_get() ? 1 : 0);
+		bh_scl(0); bh_delay();
+	}
+	bh_sda(ack ? 0 : 1);
+	bh_delay();
+	bh_scl(1); bh_delay();
+	bh_scl(0); bh_delay();
+	bh_sda(1);
+	return v;
 }
-
 static void camera_probe(void)
 {
-	/* power the camera first: P49 = DVP_PWR_CTRL enables the camera
-	 * LDOs (2.8 V / 1.8 V, schematic sheet 3) */
-	gpio_out_init(CAM_PWR, 1);
-	rtos_delay_milliseconds(50);
+	/* register the vendor sensor list (gc2145, gc0328c, hm1055, ...) */
+	{
+		extern void dvp_sensor_devices_init(void);
 
-	gpio_dev_unmap(CAM_SCL);
-	gpio_dev_unmap(CAM_SDA);
-	bk_gpio_disable_pull(CAM_SCL);
-	bk_gpio_disable_pull(CAM_SDA);
-	bk_gpio_enable_output(CAM_SCL);
-	bk_gpio_enable_output(CAM_SDA);
+		dvp_sensor_devices_init();
+	}
 
-	/* GC2145 SCCB address variants across module revisions */
-	static const uint8_t addrs[] = { 0x3C, 0x3D, 0x21, 0x20, 0x6C, 0x6E };
+	/* the sensor SCCB runs over the SIM (bit-bang) I2C on P42/P43 -
+	 * CONFIG_SIM_I2C replaces the bk_i2c_* API with the sim driver */
 
-	for (unsigned i = 0; i < sizeof(addrs); i++) {
-		if (cam_probe_addr(addrs[i])) {
-			s_cam_ready = 1;
-			printf("camera: ACK at 0x%02x\r\n", addrs[i]);
-			break;
+	const dvp_sensor_config_t *s = bk_dvp_camera_enumerate();
+
+	if (s != NULL) {
+		s_cam_ready = 1;
+		strncpy(s_cam_name, s->name ? s->name : "dvp", sizeof(s_cam_name) - 1);
+		printf("camera: detected \"%s\"\r\n", s_cam_name);
+	} else {
+		printf("camera: no dvp camera found\r\n");
+	}
+
+	/* diagnostic: raw GPIO bit-bang probe of the camera addresses on
+	 * BOTH candidate buses, now that power (P49) + MCLK are on */
+	{
+		static const uint8_t addrs[] = { 0x3C, 0x3D, 0x21, 0x20 };
+		static const gpio_id_t bus_pins[2][2] = {
+			{ GPIO_42, GPIO_43 },	/* IIC2: P42/P43 */
+			{ GPIO_20, GPIO_21 },	/* IIC1: P20/P21 */
+		};
+
+		for (int bus = 0; bus < 2; bus++) {
+			gpio_id_t sclk = bus_pins[bus][0];
+			gpio_id_t ssda = bus_pins[bus][1];
+
+			gpio_dev_unmap(sclk);
+			gpio_dev_unmap(ssda);
+			bk_gpio_disable_pull(sclk);
+			bk_gpio_disable_pull(ssda);
+			bk_gpio_enable_output(sclk);
+			bk_gpio_enable_output(ssda);
+			bh_scl_pin = sclk;
+			bh_sda_pin = ssda;
+
+			printf("camera[bh] bus %d (SCL=P%02x SDA=P%02x):\r\n",
+				bus, sclk, ssda);
+
+			for (unsigned i = 0; i < sizeof(addrs); i++) {
+				int a1, a2;
+				uint8_t id_h = 0, id_l = 0;
+
+				bh_scl_pin = sclk;
+				bh_sda_pin = ssda;
+
+				bh_start();
+				a1 = bh_write_byte(addrs[i] << 1);
+				a2 = bh_write_byte(0xF0);
+				bh_start();
+				bh_write_byte((addrs[i] << 1) | 1);
+				id_h = bh_read_byte(0);
+				bh_stop();
+
+				bh_start();
+				bh_write_byte(addrs[i] << 1);
+				bh_write_byte(0xF1);
+				bh_start();
+				bh_write_byte((addrs[i] << 1) | 1);
+				id_l = bh_read_byte(0);
+				bh_stop();
+
+				printf("camera[bh] 0x%02x: ack=%d%d id=0x%02x%02x\r\n",
+					addrs[i], a1, a2, id_h, id_l);
+			}
 		}
 	}
-	printf("camera: GC2145 %s (I2C1 P42/P43, powered via P49)\r\n",
-		s_cam_ready ? "detected" : "not detected");
 }
 
 /* ==================== WiFi ==================== */
@@ -378,7 +446,8 @@ static void handle_client(int fd)
 		send_json_str(fd, resp);
 	} else if (strcmp(path, "/api/camera") == 0) {
 		snprintf(resp, sizeof(resp),
-			 "{\"source\":\"gc2145\",\"ready\":%d,\"w\":0,\"h\":0,\"frames\":0}",
+			 "{\"source\":\"%s\",\"ready\":%d,\"w\":0,\"h\":0,\"frames\":0}",
+			 s_cam_ready ? s_cam_name : "none",
 			 s_cam_ready ? 1 : 0);
 		send_json_str(fd, resp);
 	} else if (strcmp(path, "/api/camera/control") == 0) {
